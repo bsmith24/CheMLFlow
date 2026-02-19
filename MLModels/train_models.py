@@ -1423,7 +1423,6 @@ def _train_dl(
     import torch
     import torch.nn as nn
     from torch.utils.data import TensorDataset, DataLoader
-    _seed_dl_runtime(int(random_state))
     device = _get_device()
     model = model.to(device)
     

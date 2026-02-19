@@ -23,9 +23,10 @@ Downstream steps enforce only the minimum required columns for their node (e.g.,
 If your dataset already includes numeric descriptors, use the `use.curated_features` node to point training at the curated CSV directly (no RDKit/Morgan). You can also allowlist low‑cardinality categorical columns for one‑hot encoding via:
 
 ```
-preprocess:
-  categorical_features:
-    - Family
+train:
+  features:
+    categorical_features:
+      - Family
 ```
 
 `categorical_features` and `target_column` must match **column names in your dataset**.
@@ -144,6 +145,8 @@ Outputs:
 - Each run writes a `run.log` file under the run directory.
 
 ## Config structure (node‑style)
+
+Full options reference: `docs/config-options.md`
 
 Each node has its own config block, and global settings live under `global`:
 # - global: shared defaults used by multiple nodes
