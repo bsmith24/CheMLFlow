@@ -19,6 +19,11 @@ from utilities.config_validation import validate_config_strict
 REGRESSION_MODELS = {"random_forest", "svm", "decision_tree", "xgboost", "ensemble"}
 CLASSIFICATION_MODELS = {"catboost_classifier", "chemprop"}
 DL_PREFIX = "dl_"
+_DEDUPE_STRATEGY_ALIASES = {
+    "keep_first": "first",
+    "keep_last": "last",
+}
+_VALID_DEDUPE_STRATEGIES = {"first", "last", "drop_conflicts", "majority"}
 
 
 @dataclass(frozen=True)
@@ -213,9 +218,19 @@ def _sanitize_token(value: Any) -> str:
 
 
 def _is_binary_target(series: pd.Series) -> bool:
+    non_null = series.dropna()
+    if non_null.empty:
+        return False
+
+    numeric = pd.to_numeric(non_null, errors="coerce")
+    if numeric.notna().all():
+        observed_numeric = {float(v) for v in numeric.unique().tolist()}
+        if observed_numeric and observed_numeric.issubset({0.0, 1.0}):
+            return True
+
     observed = {
         str(value).strip().lower()
-        for value in series.dropna().tolist()
+        for value in non_null.tolist()
         if str(value).strip() != ""
     }
     if not observed:
@@ -338,21 +353,102 @@ def probe_dataset(dataset_cfg: dict[str, Any]) -> dict[str, Any]:
     path = Path(str(source_path))
     if not path.exists():
         raise DOEGenerationError(f"dataset.source.path does not exist: {source_path}")
-    df = pd.read_csv(path)
-    probe["n_rows"] = int(len(df))
-    probe["columns"] = [str(c) for c in df.columns]
+    columns = [str(c) for c in pd.read_csv(path, nrows=0).columns]
+    probe["columns"] = columns
+
+    target_name = str(target_column) if target_column is not None else ""
+    target_present = bool(target_name and target_name in columns)
     if target_column:
-        present = str(target_column) in df.columns
-        probe["target_column_present"] = bool(present)
-        if present:
-            target_series = df[str(target_column)]
-            probe["target_unique"] = int(target_series.dropna().nunique())
-            probe["binary_target"] = bool(_is_binary_target(target_series))
+        probe["target_column_present"] = target_present
+
+    if target_present:
+        observed_text: set[str] = set()
+        observed_numeric: set[float] = set()
+        unique_values: set[str] = set()
+        unique_overflow = False
+        max_unique_tracked = 20000
+        saw_non_null = False
+        numeric_possible = True
+        row_count = 0
+
+        for chunk in pd.read_csv(path, usecols=[target_name], chunksize=50000):
+            series = chunk[target_name]
+            row_count += len(series)
+            non_null = series.dropna()
+            if non_null.empty:
+                continue
+            saw_non_null = True
+
+            if not unique_overflow:
+                for value in non_null.tolist():
+                    unique_values.add(str(value))
+                    if len(unique_values) > max_unique_tracked:
+                        unique_overflow = True
+                        break
+
+            normalized = non_null.astype(str).str.strip().str.lower()
+            observed_text.update(v for v in normalized.tolist() if v)
+
+            numeric = pd.to_numeric(non_null, errors="coerce")
+            if numeric.isna().any():
+                numeric_possible = False
+            else:
+                observed_numeric.update(float(v) for v in numeric.unique().tolist())
+
+        probe["n_rows"] = int(row_count)
+        if not unique_overflow:
+            probe["target_unique"] = len(unique_values)
+        else:
+            probe["target_unique"] = None
+
+        if saw_non_null:
+            if numeric_possible and observed_numeric and observed_numeric.issubset({0.0, 1.0}):
+                probe["binary_target"] = True
+            else:
+                allowed_text = {
+                    "0",
+                    "1",
+                    "false",
+                    "true",
+                    "inactive",
+                    "active",
+                    "no",
+                    "yes",
+                    "n",
+                    "y",
+                }
+                probe["binary_target"] = bool(observed_text) and observed_text.issubset(allowed_text)
+        else:
+            probe["binary_target"] = False
+    else:
+        if columns:
+            count_col = columns[0]
+            row_count = 0
+            for chunk in pd.read_csv(path, usecols=[count_col], chunksize=50000):
+                row_count += len(chunk)
+            probe["n_rows"] = int(row_count)
+        else:
+            probe["n_rows"] = 0
     return probe
 
 
 def _add_issue(issues: list[DOEIssue], code: str, path: str, message: str) -> None:
     issues.append(DOEIssue(code=code, path=path, message=message))
+
+
+def _write_doe_snapshot(output_dir: str, spec: dict[str, Any], doe_path: str | None) -> tuple[str, str]:
+    snapshot_path = os.path.join(output_dir, "doe_spec.input.yaml")
+    snapshot_text = ""
+    if doe_path:
+        candidate = Path(doe_path)
+        if candidate.exists():
+            snapshot_text = candidate.read_text(encoding="utf-8")
+    if not snapshot_text:
+        snapshot_text = yaml.safe_dump(spec, sort_keys=False)
+    with open(snapshot_path, "w", encoding="utf-8") as fh:
+        fh.write(snapshot_text)
+    snapshot_hash = hashlib.sha256(snapshot_text.encode("utf-8")).hexdigest()
+    return snapshot_path, snapshot_hash
 
 
 def _resolve_task_type(dataset_cfg: dict[str, Any], probe: dict[str, Any]) -> str:
@@ -444,8 +540,16 @@ def _build_label_block(
 
 
 def _profile_default_feature_input(profile: ProfileSpec, model_type: str) -> str:
-    if profile.name == "clf_local_csv" and model_type == "chemprop":
+    if model_type == "chemprop":
         return "none"
+    allowed_inputs = set(profile.allowed_feature_inputs)
+    preferred = ("featurize.morgan", "featurize.rdkit", "use.curated_features")
+    for candidate in preferred:
+        if candidate in allowed_inputs:
+            return candidate
+    for candidate in profile.allowed_feature_inputs:
+        if candidate != "none":
+            return candidate
     if profile.allowed_feature_inputs:
         return profile.allowed_feature_inputs[0]
     return "none"
@@ -542,8 +646,13 @@ def _build_case_config(
     ).strip()
     if not pipeline_type:
         pipeline_type = profile.name
+    default_target_column = (
+        "pIC50"
+        if profile.supports_label_ic50
+        else ("label" if resolved_task == "classification" else "target")
+    )
     target_column = str(
-        dataset_cfg.get("target_column", merged.get("global.target_column", "label" if resolved_task == "classification" else "target"))
+        dataset_cfg.get("target_column", merged.get("global.target_column", default_target_column))
     ).strip()
     random_state = int(merged.get("global.random_state", 42))
 
@@ -844,6 +953,24 @@ def _validate_case(
                 message="chembl source requires get_data.source.target_name.",
             )
 
+    if "curate" in nodes:
+        dedupe_strategy = str(_get_dotted(config, "curate.dedupe_strategy", "")).strip().lower()
+        if dedupe_strategy:
+            normalized = _DEDUPE_STRATEGY_ALIASES.get(dedupe_strategy, dedupe_strategy)
+            if normalized not in _VALID_DEDUPE_STRATEGIES:
+                allowed = ", ".join(
+                    sorted(_VALID_DEDUPE_STRATEGIES | set(_DEDUPE_STRATEGY_ALIASES.keys()))
+                )
+                _add_issue(
+                    issues,
+                    code="DOE_CURATE_DEDUPE_INVALID",
+                    path="curate.dedupe_strategy",
+                    message=(
+                        f"Unsupported curate.dedupe_strategy={dedupe_strategy!r}. "
+                        f"Allowed values: {allowed}."
+                    ),
+                )
+
     model_type = ""
     if has_train:
         model_type = str(_get_dotted(config, "train.model.type", "")).strip()
@@ -1075,6 +1202,18 @@ def _validate_case(
 
     columns = set(str(col) for col in probe.get("columns", []))
     if columns:
+        if task_type == "regression" and profile.default_source == "local_csv" and not profile.supports_label_ic50:
+            target_column = str(_get_dotted(config, "global.target_column", "")).strip()
+            if not target_column or target_column not in columns:
+                _add_issue(
+                    issues,
+                    code="DOE_TARGET_COLUMN_MISSING",
+                    path="global.target_column",
+                    message=(
+                        f"Regression local_csv DOE requires global.target_column to exist in the dataset; "
+                        f"got {target_column!r}."
+                    ),
+                )
         smiles_column = str(_get_dotted(config, "curate.smiles_column", "")).strip()
         if smiles_column and smiles_column not in columns:
             _add_issue(
@@ -1155,6 +1294,11 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
     if not output_dir:
         raise DOEGenerationError("output.dir is required.")
     os.makedirs(output_dir, exist_ok=True)
+    doe_spec_snapshot_path, doe_spec_hash = _write_doe_snapshot(
+        output_dir=output_dir,
+        spec=spec,
+        doe_path=doe_path,
+    )
 
     probe = probe_dataset(dataset_cfg)
     resolved_task = _resolve_task_type(dataset_cfg, probe)
@@ -1279,6 +1423,8 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
         "skipped_cases": len(all_records) - len(valid_records),
         "issue_counts": counts_by_issue,
         "manifest_path": manifest_path,
+        "doe_spec_hash": doe_spec_hash,
+        "doe_spec_snapshot_path": doe_spec_snapshot_path,
         "git_sha": _git_sha(),
         "selection": {
             "primary_metric": primary_metric,

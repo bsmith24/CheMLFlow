@@ -17,6 +17,8 @@ defaults:
   split.mode: holdout
   split.test_size: 0.2
   split.val_size: 0.1
+  split.require_disjoint: true
+  split.require_full_test_coverage: true
   train.tuning.method: fixed
 
 # search_space: only the fields you want to vary (grid axes)

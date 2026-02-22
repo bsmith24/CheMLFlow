@@ -42,6 +42,8 @@ coverage.xml
 /runs/
 /urease/
 /local_data/
+/config/generated/
+*.zip
 
 # CatBoost
 catboost_info/

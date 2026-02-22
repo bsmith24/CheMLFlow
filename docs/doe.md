@@ -4,7 +4,7 @@ CheMLFlow supports generating many **runtime-valid** configs from one DOE YAML f
 The generator expands your search space, filters invalid combinations, and writes:
 
 - `manifest.jsonl` (one row per attempted case, including skipped reasons)
-- `summary.json` (counts, profile/task, selection metadata)
+- `summary.json` (counts, profile/task, selection metadata, DOE spec hash/snapshot path)
 - one config YAML per valid case
 
 Script:
@@ -69,6 +69,8 @@ dataset:
     path: local_data/my_data.csv
 ```
 
+For regression with `source.type: local_csv`, `target_column` is required and must exist in the CSV.
+
 For classification with non-binary raw labels, provide a label map:
 
 ```yaml
@@ -92,6 +94,8 @@ Examples:
 - `DOE_CHEMPROP_PREPROCESS_UNSUPPORTED`
 - `DOE_SPLIT_PARAM_INVALID`
 - `DOE_DATASET_COLUMN_MISSING`
+- `DOE_TARGET_COLUMN_MISSING`
+- `DOE_CURATE_DEDUPE_INVALID`
 - `DOE_RUNTIME_SCHEMA_INVALID`
 
 `manifest.jsonl` contains these codes per skipped case.
@@ -102,6 +106,14 @@ Examples:
 - Regression default: `r2`
 
 You can override in `selection.primary_metric`.
+
+## Practical defaults
+
+- `clf_local_csv` + non-chemprop models default to `pipeline.feature_input: featurize.morgan`.
+- `reg_chembl_ic50` defaults `global.target_column` to `pIC50`.
+- For DOE comparisons across pipelines, strongly consider:
+  - `split.require_disjoint: true`
+  - `split.require_full_test_coverage: true`
 
 ## Scientific selection guidance
 

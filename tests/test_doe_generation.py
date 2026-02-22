@@ -15,6 +15,10 @@ def _pgp_dataset_path() -> str:
     return str(REPO_ROOT / "tests" / "fixtures" / "data" / "pgp_small.csv")
 
 
+def _flash_dataset_path() -> str:
+    return str(REPO_ROOT / "tests" / "fixtures" / "data" / "flash_small.csv")
+
+
 def _base_clf_doe(tmp_path: Path) -> dict:
     return {
         "version": 1,
@@ -219,3 +223,139 @@ def test_generate_doe_validates_dataset_columns(tmp_path: Path) -> None:
 
     assert summary["valid_cases"] == 0
     assert summary["issue_counts"].get("DOE_DATASET_COLUMN_MISSING", 0) >= 1
+
+
+def test_generate_doe_defaults_feature_input_for_non_chemprop_classification(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"].pop("pipeline.feature_input")
+
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary["valid_cases"] == 1
+    config_path = Path(result["valid_cases"][0]["config_path"])
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "featurize.morgan" in config["pipeline"]["nodes"]
+    assert summary["issue_counts"].get("DOE_FEATURE_INPUT_REQUIRED", 0) == 0
+
+
+def test_generate_doe_requires_regression_target_column_for_local_csv(tmp_path: Path) -> None:
+    spec = {
+        "version": 1,
+        "dataset": {
+            "profile": "reg_local_csv",
+            "task_type": "regression",
+            "source": {"type": "local_csv", "path": _flash_dataset_path()},
+            "smiles_column": "SMILES",
+        },
+        "search_space": {
+            "split.mode": ["holdout"],
+            "split.strategy": ["random"],
+            "pipeline.feature_input": ["use.curated_features"],
+            "train.model.type": ["random_forest"],
+        },
+        "defaults": {
+            "global.base_dir": str(tmp_path / "reg_missing_target"),
+            "global.runs.enabled": False,
+            "split.test_size": 0.2,
+            "split.val_size": 0.1,
+        },
+        "output": {"dir": str(tmp_path / "generated_reg_missing_target")},
+    }
+
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary["valid_cases"] == 0
+    assert summary["issue_counts"].get("DOE_TARGET_COLUMN_MISSING", 0) == 1
+
+
+def test_generate_doe_reg_chembl_defaults_target_column_to_pic50(tmp_path: Path) -> None:
+    spec = {
+        "version": 1,
+        "dataset": {
+            "profile": "reg_chembl_ic50",
+            "task_type": "regression",
+            "source": {"type": "chembl", "target_name": "Urease"},
+        },
+        "search_space": {
+            "split.mode": ["holdout"],
+            "split.strategy": ["random"],
+            "train.model.type": ["random_forest"],
+        },
+        "defaults": {
+            "global.base_dir": str(tmp_path / "chembl_default_target"),
+            "global.runs.enabled": False,
+            "split.test_size": 0.2,
+            "split.val_size": 0.1,
+        },
+        "output": {"dir": str(tmp_path / "generated_chembl_default_target")},
+    }
+
+    result = generate_doe(spec)
+    assert result["summary"]["valid_cases"] == 1
+
+    config_path = Path(result["valid_cases"][0]["config_path"])
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["global"]["target_column"] == "pIC50"
+
+
+def test_generate_doe_validates_invalid_dedupe_strategy(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["defaults"]["curate.dedupe_strategy"] = "keepfirst_typo"
+
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary["valid_cases"] == 0
+    assert summary["issue_counts"].get("DOE_CURATE_DEDUPE_INVALID", 0) == 1
+
+
+def test_generate_doe_writes_spec_snapshot_and_hash(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary.get("doe_spec_hash")
+    snapshot_path = Path(summary["doe_spec_snapshot_path"])
+    assert snapshot_path.exists()
+    assert snapshot_path.name == "doe_spec.input.yaml"
+
+
+def test_generate_doe_auto_task_detects_float_binary_labels(tmp_path: Path) -> None:
+    csv_path = tmp_path / "float_binary.csv"
+    csv_path.write_text(
+        "SMILES,label\nCC,0.0\nCCC,1.0\nCCCC,0.0\n",
+        encoding="utf-8",
+    )
+    spec = {
+        "version": 1,
+        "dataset": {
+            "name": "float_binary_auto",
+            "task_type": "auto",
+            "auto_confirmed": True,
+            "target_column": "label",
+            "source": {"type": "local_csv", "path": str(csv_path)},
+            "smiles_column": "SMILES",
+        },
+        "search_space": {
+            "split.mode": ["holdout"],
+            "split.strategy": ["random"],
+            "pipeline.feature_input": ["use.curated_features"],
+            "train.model.type": ["catboost_classifier"],
+        },
+        "defaults": {
+            "global.base_dir": str(tmp_path / "float_binary_data"),
+            "global.runs.enabled": False,
+            "split.test_size": 0.2,
+            "split.val_size": 0.1,
+            "split.stratify": True,
+        },
+        "output": {"dir": str(tmp_path / "generated_float_binary")},
+    }
+
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary["task_type"] == "classification"
+    assert summary["valid_cases"] == 1
