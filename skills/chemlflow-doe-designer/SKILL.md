@@ -36,7 +36,7 @@ Use this skill as a small operating manual for CheMLFlow DOE work. Keep the focu
 Summarize generated DOE artifacts:
 
 ```bash
-python agent-skills/chemlflow-doe-designer/scripts/summarize_doe.py <generated-doe-dir>
+python skills/chemlflow-doe-designer/scripts/summarize_doe.py <generated-doe-dir>
 ```
 
 Generate DOE configs from a spec only when the user has asked for execution or validation that requires it:

@@ -38,7 +38,7 @@ Use this skill to prove a CheMLFlow analysis result is complete, balanced, and i
 Audit an analysis directory:
 
 ```bash
-python agent-skills/chemlflow-analysis-curator/scripts/audit_analysis.py <analysis-dir>
+python skills/chemlflow-analysis-curator/scripts/audit_analysis.py <analysis-dir>
 ```
 
 Run analysis after jobs finish, adapting paths to the user's environment:
