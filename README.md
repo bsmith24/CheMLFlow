@@ -63,7 +63,7 @@ CHEMLFLOW_CONFIG=<path-to-runtime-config.yaml> python main.py
 
 Note:
 - Runtime config files are user-provided in this repo. Build one from `docs/config-options.md`
-  (or generate a batch from DOE via `scripts/generate_doe.py`).
+  or define an experiment batch with [docs/doe.md](docs/doe.md).
 
 Outputs:
 - If `global.runs.enabled: true`, results go to `runs/<timestamp>/`
