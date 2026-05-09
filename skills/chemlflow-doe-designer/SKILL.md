@@ -39,10 +39,10 @@ Summarize generated DOE artifacts:
 python skills/chemlflow-doe-designer/scripts/summarize_doe.py <generated-doe-dir>
 ```
 
-Generate DOE configs from a spec only when the user has asked for execution or validation that requires it:
+Generate DOE configs from a spec only when the user has asked for execution or validation that requires it. This expands a DOE spec into concrete runtime config files and manifests; it does not train models:
 
 ```bash
-python scripts/generate_doe.py --doe config/doe_example.yaml
+python scripts/generate_doe.py --doe config/doe.example.yaml
 ```
 
 ## References
