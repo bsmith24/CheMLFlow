@@ -1,0 +1,4 @@
+interface:
+  display_name: "CheMLFlow Study Runner"
+  short_description: "Coordinate end-to-end CheMLFlow experiment workflows."
+  default_prompt: "Use this skill to route CheMLFlow study work through dataset profiling, config/DOE design, local or Slurm execution, analysis, and audit without bypassing CheMLFlow's operating system."

@@ -8,6 +8,7 @@ outputs, and avoid common manifest, row-count, scaler, and split-balance mistake
 
 ```text
 skills/
++-- chemlflow-study-runner/
 +-- chemlflow-config-builder/
 +-- chemlflow-doe-designer/
 +-- chemlflow-analysis-curator/
@@ -22,6 +23,10 @@ Each skill has:
 ## 2. Use a skill in a prompt
 
 Ask your agent to use the skill by path:
+
+```text
+Use the CheMLFlow Study Runner skill in skills/chemlflow-study-runner to coordinate a local DOE run and audited analysis.
+```
 
 ```text
 Use the CheMLFlow Config Builder skill in skills/chemlflow-config-builder to create one runtime config for a PGP random-forest baseline.
@@ -45,6 +50,18 @@ Summarize generated DOE artifacts:
 python skills/chemlflow-doe-designer/scripts/summarize_doe.py tmp/pgp_hpcc_analysis/pgp_doe
 ```
 
+Run generated DOE configs locally:
+
+```bash
+python scripts/run_doe_local.py --doe-dir config/generated/my_doe --max-workers 1 --resume
+```
+
+Analyze local DOE outputs:
+
+```bash
+python analysis.py --backend local --doe-dir config/generated/my_doe --output-dir config/generated/my_doe/analysis_local
+```
+
 Audit analysis outputs:
 
 ```bash
@@ -61,6 +78,7 @@ For single-config work, the agent should inspect:
 - feature/model compatibility
 - split mode, seed, scaler, and output paths
 - whether full K-fold CV should be handled by DOE fanout
+- Morgan vs RDKit assumptions, and random vs scaffold assumptions
 
 For DOE work, the agent should inspect:
 
@@ -69,6 +87,7 @@ For DOE work, the agent should inspect:
 - `parent_manifest.jsonl`
 - model, feature, scaler, and split compatibility
 - valid, skipped, and parent case counts
+- local vs Slurm execution backend
 
 For analysis work, the agent should inspect:
 
@@ -78,6 +97,7 @@ For analysis work, the agent should inspect:
 - raw vs aggregated row counts
 - `scaler`, Morgan/RDKit, model, and split balance
 - failed or incomplete folds before discussing model performance
+- whether `report.json` says `backend: local` or `backend: slurm`
 
 ## 5. Optional auto-discovery
 
@@ -92,6 +112,7 @@ mkdir -p ~/.codex/skills
 ln -s "$(pwd)/skills/chemlflow-doe-designer" ~/.codex/skills/chemlflow-doe-designer
 ln -s "$(pwd)/skills/chemlflow-analysis-curator" ~/.codex/skills/chemlflow-analysis-curator
 ln -s "$(pwd)/skills/chemlflow-config-builder" ~/.codex/skills/chemlflow-config-builder
+ln -s "$(pwd)/skills/chemlflow-study-runner" ~/.codex/skills/chemlflow-study-runner
 ```
 
 After installing or symlinking skills, restart the agent session so it can reload available

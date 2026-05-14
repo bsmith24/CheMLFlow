@@ -20,6 +20,7 @@ Use this skill to prove a CheMLFlow analysis result is complete, balanced, and i
 7. Separate expected special cases from problems. For example, `chemprop` and `chemeleon` usually appear under `smiles_native`, not Morgan/RDKit.
 8. Report failures, missing statuses, incomplete folds, row-count mismatches, suspicious metric path gaps, and non-finite ranking metrics before discussing best models.
 9. Treat ranking as blocked unless the audit reports `final_claim_ready: true`.
+10. Identify the execution backend. Local DOE analysis should come from `analysis.py --backend local`, not fabricated Slurm logs or fake `sacct` rows.
 
 ## Standard Checks
 
@@ -37,6 +38,8 @@ Use this skill to prove a CheMLFlow analysis result is complete, balanced, and i
 - Ranking metrics are finite in every complete aggregate row used for a final claim.
 
 The rule is audit first, rank second. If the audit script exits nonzero, do not summarize "best models" as final results.
+
+For local runs, `child_job_count_from_log` is retained as a compatibility count in `report.json`; confirm `backend: local`, `execution_manifest_path`, `execution_count`, `local_attempt_count`, and `valid_config_count_from_manifest` are consistent.
 
 ## Useful Commands
 
@@ -60,6 +63,12 @@ Run analysis after jobs finish, adapting paths to the user's environment:
 
 ```bash
 python analysis.py --orchestrator-job-id <job-id> --orchestrator-log-prefix <prefix> --logs-dir <logs-dir> --doe-dir <doe-dir> --output-dir <analysis-dir>
+```
+
+Run local analysis after `scripts/run_doe_local.py` or manually executed generated configs:
+
+```bash
+python analysis.py --backend local --doe-dir <doe-dir> --output-dir <analysis-dir>
 ```
 
 ## References
