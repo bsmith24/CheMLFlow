@@ -40,6 +40,17 @@ Use this skill to create or audit one runnable CheMLFlow runtime config for `mai
    - `minmax` should be deliberate, not accidental.
 9. Validate the config before execution. Check node/block consistency, model/feature compatibility, target column existence, split settings, output paths, and whether analysis artifacts will include the fields the user needs.
 
+## Scientific Defaults Checkpoint
+
+Before finalizing a molecular config, ask a concise clarification or state the assumptions when these choices are ambiguous:
+
+- **Morgan vs RDKit**: Morgan fingerprints are a compact, common baseline for tree models; RDKit descriptors are a physicochemical descriptor baseline. Use both in DOE when representation sensitivity matters.
+- **Random vs scaffold split**: random splits are useful for quick baselines and interpolation-style prediction; scaffold splits are preferred for chemistry generalization to new molecular families.
+- **Single config vs DOE**: one runtime CV config is one fold slice. Use DOE fanout for a full K-fold estimate.
+- **CheMLFlow operating system**: train through CheMLFlow configs, DOE, and analysis unless the user explicitly asks for an external sanity check. Do not silently bypass CheMLFlow with ad hoc sklearn scripts for scientific results.
+
+Useful default language: "I will use Morgan + random split as a quick baseline unless you want RDKit descriptors, scaffold CV, or both represented in a DOE."
+
 ## Cross-Validation Rule
 
 Do not assume the user knows to ask for cross-validation. If they ask for one quick runnable config, say plainly: "This is a holdout run: it trains once and evaluates once on a held-out test split. It is useful for a quick check, but it is not cross-validation. For a stronger full CV estimate, we should generate sibling fold configs with DOE fanout."
