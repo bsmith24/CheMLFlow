@@ -85,7 +85,14 @@ PROFILE_SPECS: dict[str, ProfileSpec] = {
         task_type="regression",
         train_node="train",
         default_source="local_csv",
-        allowed_feature_inputs=("none", "smiles_native", "featurize.none", "featurize.rdkit", "featurize.morgan"),
+        allowed_feature_inputs=(
+            "none",
+            "smiles_native",
+            "featurize.none",
+            "featurize.rdkit",
+            "featurize.morgan",
+            "featurize.ecfp4_rdkit",
+        ),
         allowed_models=("random_forest", "svm", "decision_tree", "xgboost", "ensemble", "chemprop", "chemeleon", "dl_*"),
         supports_label_normalize=False,
         supports_label_ic50=False,
@@ -98,7 +105,14 @@ PROFILE_SPECS: dict[str, ProfileSpec] = {
         task_type="regression",
         train_node="train",
         default_source="local_csv",
-        allowed_feature_inputs=("none", "smiles_native", "featurize.none", "featurize.rdkit", "featurize.morgan"),
+        allowed_feature_inputs=(
+            "none",
+            "smiles_native",
+            "featurize.none",
+            "featurize.rdkit",
+            "featurize.morgan",
+            "featurize.ecfp4_rdkit",
+        ),
         allowed_models=("random_forest", "svm", "decision_tree", "xgboost", "ensemble", "chemprop", "chemeleon", "dl_*"),
         supports_label_normalize=False,
         supports_label_ic50=True,
@@ -130,6 +144,7 @@ PROFILE_SPECS: dict[str, ProfileSpec] = {
             "featurize.none",
             "featurize.rdkit",
             "featurize.morgan",
+            "featurize.ecfp4_rdkit",
         ),
         allowed_models=(
             "random_forest",
@@ -1101,14 +1116,23 @@ def _build_case_config(
         config["split"] = split_cfg
 
     has_configurable_featurizer = any(
-        node in {"featurize.morgan", "featurize.rdkit", "featurize.rdkit_labeled"}
+        node in {
+            "featurize.morgan",
+            "featurize.ecfp4_rdkit",
+            "featurize.rdkit",
+            "featurize.rdkit_labeled",
+        }
         for node in nodes
     )
     if has_configurable_featurizer:
         featurize_cfg = _extract_prefixed(merged, "featurize.")
-        if "radius" not in featurize_cfg and "featurize.morgan" in nodes:
+        if "radius" not in featurize_cfg and (
+            "featurize.morgan" in nodes or "featurize.ecfp4_rdkit" in nodes
+        ):
             featurize_cfg["radius"] = 2
-        if "n_bits" not in featurize_cfg and "featurize.morgan" in nodes:
+        if "n_bits" not in featurize_cfg and (
+            "featurize.morgan" in nodes or "featurize.ecfp4_rdkit" in nodes
+        ):
             featurize_cfg["n_bits"] = 2048
         config["featurize"] = featurize_cfg
 
@@ -1308,6 +1332,7 @@ def _validate_case(
         "featurize.rdkit",
         "featurize.rdkit_labeled",
         "featurize.morgan",
+        "featurize.ecfp4_rdkit",
     }
     preprocess_scaler = str(_get_dotted(config, "preprocess.scaler", "robust")).strip().lower() or "robust"
     selected_feature_input = _normalize_feature_input(
@@ -1315,6 +1340,8 @@ def _validate_case(
     ) or "none"
     if "featurize.none" in nodes or "use.curated_features" in nodes:
         selected_feature_input = "featurize.none"
+    elif "featurize.ecfp4_rdkit" in nodes:
+        selected_feature_input = "featurize.ecfp4_rdkit"
     elif "featurize.rdkit" in nodes or "featurize.rdkit_labeled" in nodes:
         selected_feature_input = "featurize.rdkit"
     elif "featurize.morgan" in nodes:
@@ -1342,7 +1369,8 @@ def _validate_case(
                 path="pipeline.feature_input",
                 message=(
                     "smiles_native is reserved for SMILES-native models (chemprop/chemeleon). "
-                    "Use featurize.rdkit, featurize.morgan, or featurize.none for tabular models."
+                    "Use featurize.rdkit, featurize.morgan, featurize.ecfp4_rdkit, "
+                    "or featurize.none for tabular models."
                 ),
             )
         elif not any(node in feature_nodes for node in nodes):

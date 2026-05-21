@@ -643,6 +643,8 @@ def _pop_dotted(container: dict[str, Any], dotted: str) -> None:
 
 def _infer_feature_input(config: dict[str, Any]) -> str | None:
     nodes = ((config.get("pipeline") or {}).get("nodes") if isinstance(config.get("pipeline"), dict) else None) or []
+    if "featurize.ecfp4_rdkit" in nodes:
+        return "featurize.ecfp4_rdkit"
     if "featurize.morgan" in nodes:
         return "featurize.morgan"
     if "featurize.rdkit_labeled" in nodes:

@@ -342,6 +342,16 @@ def test_analysis_prefers_explicit_feature_node_over_declared_pipeline_feature_i
     assert _infer_feature_input(config) == "featurize.rdkit"
 
 
+def test_analysis_infers_ecfp4_rdkit_feature_input() -> None:
+    config = {
+        "pipeline": {
+            "nodes": ["get_data", "curate", "featurize.ecfp4_rdkit", "split", "train"],
+        }
+    }
+
+    assert _infer_feature_input(config) == "featurize.ecfp4_rdkit"
+
+
 def test_analysis_recognizes_legacy_use_curated_features_alias() -> None:
     config = {
         "pipeline": {

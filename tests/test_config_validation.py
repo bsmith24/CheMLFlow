@@ -262,6 +262,23 @@ def test_strict_allows_rdkit_labeled_as_rdkit_profile_branch() -> None:
     assert "CFG_FEATURE_INPUT_NOT_SUPPORTED" not in codes
 
 
+def test_strict_allows_ecfp4_rdkit_as_local_csv_feature_branch() -> None:
+    nodes = ["get_data", "featurize.ecfp4_rdkit", "split", "train"]
+    cfg = _base_config(nodes)
+    cfg["global"]["task_type"] = "classification"
+    cfg["pipeline"]["feature_input"] = "featurize.ecfp4_rdkit"
+    cfg["get_data"] = {"data_source": "local_csv", "source": {"path": "data.csv"}}
+    cfg["featurize"] = {"radius": 2, "n_bits": 2048}
+    cfg["split"] = {"strategy": "random"}
+    cfg["train"] = {"model": {"type": "random_forest"}}
+
+    issues = collect_config_issues(cfg, nodes)
+    codes = {issue.code for issue in issues}
+    assert "CFG_FEATURE_INPUT_NOT_SUPPORTED" not in codes
+    assert "CFG_FEATURE_INPUT_NODE_REQUIRED" not in codes
+    assert "CFG_PIPELINE_FEATURE_INPUT_MISMATCH" not in codes
+
+
 def test_strict_rejects_tdc_split_profile_shape() -> None:
     cfg = _base_config(["get_data", "split", "train.tdc"])
     cfg["global"]["task_type"] = "classification"

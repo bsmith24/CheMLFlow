@@ -1315,6 +1315,23 @@ def test_generate_doe_accepts_rdkit_labeled_feature_alias(tmp_path: Path) -> Non
     assert "featurize.rdkit_labeled" in config["pipeline"]["nodes"]
 
 
+def test_generate_doe_accepts_ecfp4_rdkit_feature_input(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["pipeline.feature_input"] = ["featurize.ecfp4_rdkit"]
+
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary["valid_cases"] == 1
+    assert summary["issue_counts"].get("DOE_FEATURE_INPUT_NOT_SUPPORTED", 0) == 0
+    config_path = Path(result["valid_cases"][0]["config_path"])
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["pipeline"]["feature_input"] == "featurize.ecfp4_rdkit"
+    assert "featurize.ecfp4_rdkit" in config["pipeline"]["nodes"]
+    assert config["featurize"]["radius"] == 2
+    assert config["featurize"]["n_bits"] == 2048
+
+
 def test_generate_doe_normalizes_legacy_curated_feature_alias(tmp_path: Path) -> None:
     spec = _base_clf_doe(tmp_path)
     spec["search_space"]["pipeline.feature_input"] = ["use.curated_features"]

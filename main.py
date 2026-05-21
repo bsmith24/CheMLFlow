@@ -69,6 +69,7 @@ _EXPLICIT_FEATURE_INPUT_NODES = {
     "featurize.rdkit",
     "featurize.rdkit_labeled",
     "featurize.morgan",
+    "featurize.ecfp4_rdkit",
 }
 
 
@@ -87,6 +88,9 @@ def build_paths(base_dir: str) -> dict[str, str]:
         "morgan_fingerprints": os.path.join(base_dir, "morgan_fingerprints.csv"),
         "morgan_labeled": os.path.join(base_dir, "morgan_fingerprints_labeled.csv"),
         "morgan_meta": os.path.join(base_dir, "morgan_meta.json"),
+        "ecfp4_rdkit_features": os.path.join(base_dir, "ecfp4_rdkit_features.csv"),
+        "ecfp4_rdkit_labeled": os.path.join(base_dir, "ecfp4_rdkit_labeled.csv"),
+        "ecfp4_rdkit_meta": os.path.join(base_dir, "ecfp4_rdkit_meta.json"),
         "preprocessed_features": os.path.join(base_dir, "preprocessed_features.csv"),
         "preprocessed_labels": os.path.join(base_dir, "preprocessed_labels.csv"),
         "selected_features": os.path.join(base_dir, "selected_features.csv"),
@@ -718,6 +722,59 @@ def run_node_featurize_morgan(context: dict) -> None:
     context["feature_method"] = "morgan"
 
 
+def run_node_featurize_ecfp4_rdkit(context: dict) -> None:
+    validate_contract(
+        bind_output_path(
+            FEATURIZE_MORGAN_INPUT_CONTRACT,
+            context.get("curated_path", context["paths"]["curated"]),
+        ),
+        warn_only=False,
+    )
+    script_path = os.path.join("GenDescriptors", "ECFP4_RDKit_descriptors.py")
+    input_file = context.get("curated_path", context["paths"]["curated"])
+    output_file = context["paths"]["ecfp4_rdkit_features"]
+    labeled_output = context["paths"]["ecfp4_rdkit_labeled"]
+    metadata_output = context["paths"]["ecfp4_rdkit_meta"]
+    _track_heavy_artifact(context, output_file)
+    _track_heavy_artifact(context, labeled_output)
+    featurize_config = context.get("featurize_config", {})
+    radius = int(featurize_config.get("radius", 2))
+    n_bits = int(featurize_config.get("n_bits", 2048))
+    _run_subprocess(
+        [
+            sys.executable,
+            script_path,
+            input_file,
+            output_file,
+            "--radius",
+            str(radius),
+            "--n_bits",
+            str(n_bits),
+            "--labeled-output-file",
+            labeled_output,
+            "--property-columns",
+            context["target_column"],
+            "--metadata-output-file",
+            metadata_output,
+        ]
+    )
+    validate_contract(
+        bind_output_path(FEATURIZE_MORGAN_OUTPUT_CONTRACT, output_file),
+        warn_only=True,
+    )
+    validate_contract(
+        make_target_column_contract(
+            name="featurize_ecfp4_rdkit_labeled_output",
+            target_column=context["target_column"],
+            output_path=labeled_output,
+        ),
+        warn_only=True,
+    )
+    context["feature_matrix"] = labeled_output
+    context["labels_matrix"] = labeled_output
+    context["feature_method"] = "ecfp4_rdkit"
+
+
 def run_node_label_normalize(context: dict) -> None:
     label_config = context.get("label_config", {})
     source_column = label_config.get("source_column")
@@ -780,13 +837,23 @@ def _resolve_feature_method(context: dict) -> str | None:
     pipeline_feature_input = str(context.get("pipeline_feature_input", "")).strip().lower()
     if pipeline_feature_input == "smiles_native":
         return "smiles_native"
+    if pipeline_feature_input == "featurize.ecfp4_rdkit":
+        return "ecfp4_rdkit"
 
     pipeline_nodes = [str(node).strip().lower() for node in (context.get("pipeline_nodes") or [])]
-    for candidate in ("featurize.morgan", "featurize.rdkit_labeled", "featurize.rdkit", "featurize.none"):
+    for candidate in (
+        "featurize.ecfp4_rdkit",
+        "featurize.morgan",
+        "featurize.rdkit_labeled",
+        "featurize.rdkit",
+        "featurize.none",
+    ):
         if candidate in pipeline_nodes:
             return candidate.split(".", 1)[1]
 
     feature_matrix = str(context.get("feature_matrix", "")).strip().lower()
+    if "ecfp4_rdkit" in feature_matrix:
+        return "ecfp4_rdkit"
     if "morgan" in feature_matrix:
         return "morgan"
     if "rdkit" in feature_matrix:
@@ -999,6 +1066,7 @@ def run_node_split(context: dict) -> None:
         "featurize.rdkit",
         "featurize.rdkit_labeled",
         "featurize.morgan",
+        "featurize.ecfp4_rdkit",
     }
     pipeline_nodes = list(context.get("pipeline_nodes") or [])
     explicit_feature_input_before_split = False
@@ -1587,7 +1655,10 @@ def _resolve_feature_inputs(
     if require_explicit and not _has_explicit_feature_input_node(context):
         raise ValueError(
             f"{consumer} requires an explicit feature input node in pipeline.nodes "
-            "(featurize.none/featurize.rdkit/featurize.rdkit_labeled/featurize.morgan)."
+            "("
+            "featurize.none/featurize.rdkit/featurize.rdkit_labeled/"
+            "featurize.morgan/featurize.ecfp4_rdkit"
+            ")."
         )
     pipeline_type = context.get("pipeline_type", "chembl")
     if pipeline_type == "qm9":
@@ -2579,6 +2650,7 @@ NODE_REGISTRY = {
     "featurize.rdkit": run_node_featurize_rdkit,
     "featurize.rdkit_labeled": run_node_featurize_rdkit_labeled,
     "featurize.morgan": run_node_featurize_morgan,
+    "featurize.ecfp4_rdkit": run_node_featurize_ecfp4_rdkit,
     "preprocess.features": run_node_preprocess_features,
     "select.features": run_node_select_features,
     "train": run_node_train,
@@ -2601,6 +2673,7 @@ _SPLIT_MUST_FOLLOW = {
     "featurize.rdkit",
     "featurize.rdkit_labeled",
     "featurize.morgan",
+    "featurize.ecfp4_rdkit",
 }
 
 
