@@ -114,6 +114,16 @@ METRIC_FIELDS = [
 ]
 
 
+# Time-series (Adaptive NVAR) horizon RMSE columns. Emitted alongside the
+# tabular metrics so DOE analysis CSVs surface per-horizon rollout error for
+# train/val/test. Purely additive: non-time-series runs leave these blank.
+HORIZON_RMSE_FIELDS = [
+    f"{segment}_rmse_h{h}"
+    for segment in ("train", "val", "test")
+    for h in (25, 50, 75, 100)
+]
+
+
 RUN_METRIC_CSV_FIELDS = [
     "case_name",
     "group_index",
@@ -139,7 +149,7 @@ RUN_METRIC_CSV_FIELDS = [
     "run_dirs",
     "metrics_path",
     "metrics_paths",
-] + METRIC_FIELDS + [f"{field}_std" for field in METRIC_FIELDS]
+] + METRIC_FIELDS + [f"{field}_std" for field in METRIC_FIELDS] + HORIZON_RMSE_FIELDS
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1387,12 +1397,54 @@ def _build_all_runs_metric_rows(jobs: list[ChildJob]) -> list[dict[str, Any]]:
                 "train_f1": train_split.get("f1", ""),
                 "test_f1": test_split.get("f1", ""),
                 "val_f1": val_split.get("f1", ""),
+                **{
+                    f"{segment}_rmse_h{h}": _pick_horizon_metric(
+                        segment, h, split_metrics, top_metrics
+                    )
+                    for segment in ("train", "val", "test")
+                    for h in (25, 50, 75, 100)
+                },
             }
         )
         for metric_field in METRIC_FIELDS:
             rows[-1][f"{metric_field}_std"] = ""
 
     return rows
+
+
+def _pick_horizon_metric(
+    segment: str,
+    horizon: int,
+    split_metrics: dict[str, Any] | None,
+    top_metrics: dict[str, Any] | None,
+) -> Any:
+    """Pick the best available RMSE@horizon value for analysis CSVs.
+
+    Preference order:
+    1. repeated final-test mean from metrics.json,
+    2. repeated mean from split_metrics.json,
+    3. canonical split value (which may already be the repeated mean after the
+       time-series trainer finishes all final runs).
+    """
+    key = f"rmse_h{horizon}"
+    repeated_name = f"{segment}_rmse_horizons_repeated"
+    top_repeated = (top_metrics or {}).get(repeated_name)
+    if isinstance(top_repeated, dict):
+        value = top_repeated.get(f"{key}_mean")
+        if value != "" and value is not None:
+            return value
+    if isinstance(split_metrics, dict):
+        split_repeated = split_metrics.get(f"{segment}_repeated")
+        if isinstance(split_repeated, dict):
+            value = split_repeated.get(f"{key}_mean")
+            if value != "" and value is not None:
+                return value
+        split_values = split_metrics.get(segment)
+        if isinstance(split_values, dict):
+            value = split_values.get(key)
+            if value != "" and value is not None:
+                return value
+    return ""
 
 
 def _aggregate_all_runs_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

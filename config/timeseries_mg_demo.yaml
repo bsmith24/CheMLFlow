@@ -1,0 +1,74 @@
+# ======================================================================
+# Single-case CheMLFlow runtime config for the time-series pipeline.
+#
+# This config trains an Adaptive NVAR forecaster on the user-supplied
+# Mackey-Glass series (`ground_truth.npy`). It mirrors the notebook
+# `Optuna_MG_Adaptive_NVAR_0percent_noise.ipynb`, but with a single fixed
+# hyperparameter set (no Optuna). Use the matching DOE (config/doe_timeseries.yaml)
+# to sweep configurations.
+#
+# To run a single fixed-config training:
+#   CHEMLFLOW_CONFIG=config/timeseries_mg_demo.yaml python main.py
+# ======================================================================
+
+global:
+  pipeline_type: timeseries
+  task_type: regression
+  base_dir: artifacts/data/timeseries_mg_demo
+  run_dir: artifacts/runs/timeseries_mg_demo
+  target_column: x         # purely cosmetic for time-series; not consumed
+  random_state: 2025
+  thresholds:
+    active: 1000           # unused for timeseries; required by global schema
+    inactive: 10000
+  artifact_retention: full
+
+pipeline:
+  nodes:
+    - get_data
+    - train.timeseries
+  feature_input: none
+
+get_data:
+  data_source: local_npy
+  source:
+    # Path to the .npy that ships with the user's archive.
+    # ground_truth.npy has shape [d=1, T] in the notebook, so we use cols.
+    path: data/ground_truth.npy
+    time_axis: cols
+
+split:
+  warmup_len: 500
+  train_len: 7500
+  val_len: 1000
+  test_len: 1000
+
+train:
+  tuning:
+    method: fixed
+  model:
+    type: dl_adaptive_nvar
+    params:
+      # Architectural
+      k: 5                        # delay-embedding length
+      hidden_dim: 200             # MLP feature hidden size
+      # feature_dim_m: omit to default to dk*(dk+1)/2 (matches notebook)
+
+      # Training (Adam phase)
+      lr_adam: 1.0e-3
+      max_epochs_adam: 5000
+      adam_patience: 200
+      weight_decay: 0.0
+
+      # Training (L-BFGS phase)
+      lr_lbfgs: 1.0
+      num_epochs_lbfgs: 50000
+      lbfgs_patience: 200
+
+      # Noise
+      train_noise_scale: 0.05
+      dataset_noise_scale: 0.0
+
+      # Rollout (windowed multi-horizon RMSE)
+      horizons: [25, 50, 75, 100]
+      num_windows: 10
