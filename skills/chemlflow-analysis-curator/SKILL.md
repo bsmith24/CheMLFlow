@@ -35,7 +35,7 @@ Use this skill to prove a CheMLFlow analysis result is complete, balanced, and i
 - Raw metrics rows equal completed execution children with metrics.
 - Aggregated metrics rows equal completed scientific parents with complete slices.
 - `scaler` is present and populated when the DOE varied `preprocess.scaler`.
-- Morgan and RDKit row counts match for non-native models when both feature branches are in the DOE.
+- Morgan, RDKit, and ECFP4+RDKit row counts match for non-native models when those feature branches are in the DOE.
 - Chemprop/CheMeleon rows appear under `feature_input=smiles_native` when those baselines are in scope.
 - Chemprop/CheMeleon dependency preflight notes, checkpoint availability, and skipped-baseline rationale are consistent with the generated manifest and completed execution rows.
 - If a final answer compares against a source paper, the analysis either includes a comparable model family or explicitly says the study is only a classical/tabular baseline.

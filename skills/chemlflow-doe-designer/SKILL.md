@@ -31,11 +31,11 @@ Use this skill as a small operating manual for CheMLFlow DOE work. Keep the focu
 - Prefer separate DOE specs for different split modes or evaluation protocols, such as holdout vs CV vs nested holdout CV. Do not split a single CV model-selection study into separate DOE specs solely because tabular and SMILES-native model families have different valid feature inputs.
 - Canonical broad-study pattern: when one dataset, task, selection metric, and split mode are shared, put `split.strategy`, `pipeline.feature_input`, `preprocess.scaler`, and `train.model.type` axes in one DOE. CheMLFlow DOE generation is expected to mark known-invalid combinations as skipped in `manifest.jsonl`; skipped invalid combinations are part of the audit trail, not a reason to pre-split the DOE.
 - Treat `smiles_native` as reserved for SMILES-native models such as `chemprop` and `chemeleon`.
-- Expect tabular models to use `featurize.rdkit`, `featurize.morgan`, or curated numeric features, not raw SMILES.
+- Expect tabular models to use `featurize.rdkit`, `featurize.morgan`, `featurize.ecfp4_rdkit`, or curated numeric features, not raw SMILES.
 - Expect `chemprop` and `chemeleon` to reject ordinary preprocessing/scaler branches except meaningful no-op branches.
 - Keep compatibility groups explicit when a DOE mixes model families:
   - `pipeline.feature_input: smiles_native` with `train.model.type: chemprop` or `chemeleon`, usually `preprocess.scaler: none`.
-  - `pipeline.feature_input: featurize.rdkit` or `featurize.morgan` with tabular models such as random forest, SVM, XGBoost, ensemble, and CatBoost.
+  - `pipeline.feature_input: featurize.rdkit`, `featurize.morgan`, or `featurize.ecfp4_rdkit` with tabular models such as random forest, SVM, XGBoost, ensemble, and CatBoost.
   - In CheMLFlow DOE specs, a flat mixed search space is acceptable for known model/feature/preprocess incompatibilities because `generate_doe.py` records skipped invalid children. Verify the generated `summary.json` and `manifest.jsonl` rather than creating separate DOE files for each compatibility group.
 - Include Chemprop from scratch for SMILES datasets when the original benchmark used graph/message-passing models. Include CheMeleon when a valid checkpoint is available and the user has not excluded foundation baselines.
 - Before recommending local execution of a DOE with `chemprop` or `chemeleon`, run a dependency preflight in the active environment:
@@ -47,7 +47,7 @@ python -c "import rdkit, torch, lightning, chemprop; from chemprop import data, 
 - Record whether the preflight passed, whether execution is CPU-only or GPU/MPS-backed, and whether a generated SMILES-native child has actually completed. Imports prove dependency readiness, not successful CheMLFlow training.
 - If `chemeleon` is in the DOE, set `train.model.foundation_checkpoint` to an existing allowed path and ensure generated CheMeleon configs carry `foundation: chemeleon` when that is the repo's convention.
 - Do not search the user's broader computer for `chemeleon_mp.pt`. Check only the active repo/workspace, paths already in the DOE/config, and user-provided paths. If no checkpoint is found, ask whether to download it from `https://zenodo.org/records/15460715/files/chemeleon_mp.pt`; if not, skip the CheMeleon branch cleanly.
-- For comparison studies, check that Morgan/RDKit/scaler/split rows are balanced across non-native models.
+- For comparison studies, check that Morgan/RDKit/ECFP4+RDKit/scaler/split rows are balanced across non-native models when those branches are in scope.
 - For final claims, prefer CV or nested holdout CV over selecting many configs on one fixed test split.
 - For benchmark/model-selection DOEs that will be consumed by `analysis.py`, set
   `train.reporting.plot_split_performance: true`. Without split metrics, top-level

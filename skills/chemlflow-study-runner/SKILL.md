@@ -16,9 +16,9 @@ Use this as the master CheMLFlow operating skill. It routes agents to the focuse
 - Audit before ranking. Do not report "best model" claims until the analysis curator gate passes.
 - Separate scientific parent configs from execution children. A runtime CV config is one fold/repeat slice; DOE fanout is the normal path for full K-fold results.
 - Preserve generated configs, manifests, run statuses, logs, metrics, and analysis outputs.
-- Ask or state assumptions for molecular science choices that change interpretation: Morgan vs RDKit, random vs scaffold, holdout vs CV vs nested CV, and whether SMILES-native models are in scope.
+- Ask or state assumptions for molecular science choices that change interpretation: Morgan vs RDKit vs ECFP4+RDKit, random vs scaffold, holdout vs CV vs nested CV, and whether SMILES-native models are in scope.
 - If the dataset has a known source paper, benchmark, or public name, identify the original task, model family, split strategy, and reported metrics before DOE design. Include a feasible comparable baseline or explicitly label the study as incomplete relative to the literature.
-- For SMILES molecular datasets, explicitly decide whether `chemprop` and `chemeleon` are in scope. Do not treat Morgan/RDKit tabular models as the complete search space unless the user asked to exclude SMILES-native models or the runtime cannot support them.
+- For SMILES molecular datasets, explicitly decide whether `chemprop` and `chemeleon` are in scope. Do not treat Morgan/RDKit/ECFP4+RDKit tabular models as the complete search space unless the user asked to exclude SMILES-native models or the runtime cannot support them.
 - Before including `chemprop` or `chemeleon` in a local execution plan, run a fast dependency preflight in the active environment. Verify imports for `rdkit`, `torch`, `lightning`, `chemprop`, and Chemprop submodules (`data`, `featurizers`, `models`, `nn`), and record Python, OS, Torch, device availability, and Torch thread count.
 - Treat dependency preflight as necessary but not sufficient. A SMILES-native branch is execution-proven only after one generated Chemprop/CheMeleon child completes through `scripts/run_doe_local.py` and the pilot analysis can read its metrics.
 - Treat local native thread caps such as `OMP_NUM_THREADS=1` and `MKL_NUM_THREADS=1` as diagnostic or backend-specific runtime workarounds, not scientific defaults. Do not make them mandatory defaults in the DOE or CheMLFlow config unless a local smoke test shows they are needed or the user explicitly asks.
@@ -54,7 +54,7 @@ python -c "import platform, torch; print(platform.platform(), platform.python_ve
 5. Make the scientific defaults explicit:
    - Quick molecular baseline: Morgan + random split.
    - Chemistry generalization: scaffold CV.
-   - Representation comparison: Morgan and RDKit, with balanced row coverage.
+   - Representation comparison: Morgan, RDKit, and ECFP4+RDKit when relevant, with balanced row coverage.
    - Paper-relevant SMILES baseline: Chemprop from scratch when the original work used graph/message-passing models or when the user asks for best structure-based prediction.
    - Foundation-model baseline: CheMeleon only when a checkpoint is available in an allowed path or the user approves downloading it.
    - Final claims: CV, nested CV, or an untouched final holdout depending on the claim.

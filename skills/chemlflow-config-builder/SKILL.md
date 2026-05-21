@@ -27,7 +27,7 @@ Use this skill to create or audit one runnable CheMLFlow runtime config for `mai
    - `drop_missing_target: true`
    - an intentional `dedupe_strategy`, commonly `drop_conflicts` for classification.
 6. Choose a feature/model pair that is valid:
-   - Tabular ML/DL: `featurize.rdkit`, `featurize.morgan`, or `featurize.none`.
+   - Tabular ML/DL: `featurize.rdkit`, `featurize.morgan`, `featurize.ecfp4_rdkit`, or `featurize.none`.
    - SMILES-native models: `pipeline.feature_input: smiles_native` with `chemprop` or `chemeleon`.
    - Chemprop from scratch: use `train.model.type: chemprop`, `pipeline.feature_input: smiles_native`, and no descriptor-generation branch.
    - CheMeleon: use `train.model.type: chemeleon` or Chemprop with `train.model.foundation: chemeleon`; require a real local `foundation_checkpoint` path before promising the run.
@@ -56,13 +56,13 @@ python -c "import rdkit, torch, lightning, chemprop; from chemprop import data, 
 
 Before finalizing a molecular config, ask a concise clarification or state the assumptions when these choices are ambiguous:
 
-- **Morgan vs RDKit**: Morgan fingerprints are a compact, common baseline for tree models; RDKit descriptors are a physicochemical descriptor baseline. Use both in DOE when representation sensitivity matters.
+- **Morgan vs RDKit vs ECFP4+RDKit**: Morgan fingerprints are a compact, common baseline for tree models; RDKit descriptors are a physicochemical descriptor baseline; `featurize.ecfp4_rdkit` combines ECFP4 fingerprints with RDKit descriptors for source-paper or external-benchmark comparisons that use that representation. Use balanced branches in DOE when representation sensitivity matters.
 - **Tabular vs SMILES-native**: if a molecular CSV has a SMILES column, explicitly include or exclude Chemprop. Include Chemprop when the source literature used graph/message-passing models or when the goal is "best model from structure." Consider CheMeleon when a checkpoint is available.
 - **Random vs scaffold split**: random splits are useful for quick baselines and interpolation-style prediction; scaffold splits are preferred for chemistry generalization to new molecular families.
 - **Single config vs DOE**: one runtime CV config is one fold slice. Use DOE fanout for a full K-fold estimate.
 - **CheMLFlow operating system**: train through CheMLFlow configs, DOE, and analysis unless the user explicitly asks for an external sanity check. Do not silently bypass CheMLFlow with ad hoc sklearn scripts for scientific results.
 
-Useful default language: "I will use Morgan + random split as a quick baseline unless you want RDKit descriptors, Chemprop/CheMeleon, scaffold CV, or all of those represented in a DOE."
+Useful default language: "I will use Morgan + random split as a quick baseline unless you want RDKit descriptors, ECFP4+RDKit descriptors, Chemprop/CheMeleon, scaffold CV, or all of those represented in a DOE."
 
 ## Cross-Validation Rule
 
@@ -89,7 +89,7 @@ When using examples, prefer `rep0_fold0` examples for model/task config shape. U
 
 ## Fair Comparison Checks
 
-- When comparing RDKit, Morgan, and SMILES-native branches, confirm that row coverage is comparable. Representation-specific row loss can invalidate model/feature comparisons.
+- When comparing RDKit, Morgan, ECFP4+RDKit, and SMILES-native branches, confirm that row coverage is comparable. Representation-specific row loss can invalidate model/feature comparisons.
 - For DOE-style benchmarking, define the common curated molecule universe first, then vary representations, scalers, models, and splits.
 - Do not hide dropped-row behavior. Report how missing SMILES, invalid SMILES, missing targets, unmapped labels, duplicate rows, and feature cleaning affect the train/val/test row universe.
 - For Chemprop/CheMeleon, verify the config has an explicit validation split such as `split.val_from_train.val_size: 0.1`; CheMLFlow's Chemprop path needs train/val/test partitions.
