@@ -9,8 +9,16 @@ Supports two on-disk formats:
             remaining columns are state variables.
 
 The pipeline contract is:
-  raw_path  -> npz or csv on disk produced by `get_data`
+  raw_path  -> a real CSV produced by `get_data` (one row per timestep,
+               header `ch0,ch1,...`), with an optional `<raw>.meta.json`
+               sidecar carrying provenance.
   loader    -> returns ndarray of shape [T, d], dtype float32
+
+`get_data` for the `local_npy` / `local_ts_csv` sources writes the canonical
+CSV to `paths["raw"]` (e.g. `raw.csv`), so CheMLFlow's CSV-oriented
+get_data_output contract validates it cleanly. The loader still understands
+legacy `.npz` artifacts (sniffed by the `PK` magic header) for backward
+compatibility with run dirs created before the CSV switch.
 
 Standard split semantics (warmup, train, val, test) are documented under
 `slice_time_series`. We deliberately keep the slicing model-agnostic so the
@@ -33,13 +41,12 @@ LOGGER = logging.getLogger(__name__)
 # On-disk formats and exchange representation
 # ---------------------------------------------------------------------------
 
-# We store raw time-series after `get_data` as a single .npz with keys:
-#   data: float32 array of shape [T, d]
-#   meta: serialized JSON of provenance fields (source, original_shape, etc.)
-# A .npz is used (instead of .npy) so we can ship metadata alongside the array
-# without inventing a sidecar file. Existing CheMLFlow nodes for the
-# `timeseries` pipeline_type read this file directly; tabular nodes never
-# touch it.
+# The canonical raw time-series is a real CSV (see save_raw_timeseries), so
+# `paths["raw"]` holds genuine CSV bytes and validates against the standard
+# CSV-oriented get_data_output contract. Provenance lives in a
+# `<raw>.meta.json` sidecar. The two constants below name the keys used by the
+# *legacy* .npz format, which load_raw_timeseries still reads for backward
+# compatibility with run dirs created before the CSV switch.
 
 RAW_TS_KEY = "data"
 RAW_TS_META_KEY = "meta"
@@ -156,33 +163,48 @@ def save_raw_timeseries(
     *,
     source_meta: Optional[dict] = None,
 ) -> None:
-    """Write the canonical .npz that downstream timeseries nodes read.
+    """Write the canonical raw time-series file as a real CSV.
 
-    We write through an open file handle to bypass numpy's automatic
-    `.npz` extension appending — the caller may want to keep the existing
-    `.csv` filename used by other CheMLFlow paths.
+    Format: one row per timestep, one column per channel, header row of the
+    form ``ch0,ch1,...,ch{d-1}``. Float values are written with ``%.9g`` so
+    the float32 -> text -> float32 round-trip is bit-identical (single
+    precision needs at most 9 significant decimal digits).
+
+    Provenance (data_source, original path, time_axis, original shape) is
+    written to a ``<output_path>.meta.json`` sidecar so human edits to the CSV
+    don't silently drop it. The sidecar is optional at read time; the CSV
+    alone is sufficient to train.
+
+    This keeps ``paths["raw"]`` (typically ``raw.csv``) holding genuine CSV
+    bytes, so CheMLFlow's CSV-oriented get_data_output contract validates it
+    without warnings and anyone inspecting the file sees what they expect.
     """
     import json
 
     if array.ndim != 2:
         raise ValueError(f"Expected 2-D [T, d] array, got shape {array.shape}.")
-    meta_str = json.dumps(source_meta or {}, sort_keys=True)
-    with open(output_path, "wb") as fh:
-        np.savez(
-            fh,
-            **{
-                RAW_TS_KEY: array.astype(np.float32, copy=False),
-                RAW_TS_META_KEY: np.array(meta_str),
-            },
-        )
+    arr = array.astype(np.float32, copy=False)
+    header = ",".join(f"ch{i}" for i in range(arr.shape[1]))
+    np.savetxt(output_path, arr, delimiter=",", header=header, comments="", fmt="%.9g")
+
+    if source_meta:
+        sidecar = output_path + ".meta.json"
+        with open(sidecar, "w", encoding="utf-8") as fh:
+            json.dump(dict(source_meta), fh, sort_keys=True)
 
 
 def load_raw_timeseries(path: str) -> Tuple[np.ndarray, dict]:
-    """Read the canonical raw .npz back. Returns (data[T,d], meta).
+    """Read the canonical raw time-series CSV back. Returns (data[T,d], meta).
 
-    Tolerates a `.npz`-suffixed sibling in case an older save path produced
-    one (numpy auto-appends `.npz` when given a string output without that
-    extension; the current writer avoids it, but legacy artifacts may exist).
+    Resilient to two on-disk shapes:
+      * CSV (current): a ``ch0,ch1,...`` header plus an optional
+        ``<path>.meta.json`` sidecar.
+      * .npz (legacy): a binary archive produced by an earlier writer, either
+        at ``path`` or at ``path + ".npz"``. Kept so case dirs created before
+        the CSV switch still load.
+
+    The reader sniffs the first two bytes: ZIP archives (.npz) start with
+    ``PK``; CSVs do not.
     """
     import json
 
@@ -192,18 +214,49 @@ def load_raw_timeseries(path: str) -> Tuple[np.ndarray, dict]:
             candidate = candidate + ".npz"
         else:
             raise FileNotFoundError(f"Raw time-series file not found: {path}")
-    with np.load(candidate, allow_pickle=False) as bundle:
-        if RAW_TS_KEY not in bundle.files:
-            raise ValueError(
-                f"{candidate} is not a CheMLFlow time-series file; missing key {RAW_TS_KEY!r}."
+
+    with open(candidate, "rb") as fh:
+        magic = fh.read(2)
+
+    if magic == b"PK":
+        # Legacy .npz path.
+        with np.load(candidate, allow_pickle=False) as bundle:
+            if RAW_TS_KEY not in bundle.files:
+                raise ValueError(
+                    f"{candidate} is not a CheMLFlow time-series file; "
+                    f"missing key {RAW_TS_KEY!r}."
+                )
+            data = np.asarray(bundle[RAW_TS_KEY], dtype=np.float32)
+            meta_str = (
+                str(bundle[RAW_TS_META_KEY]) if RAW_TS_META_KEY in bundle.files else "{}"
             )
-        data = np.asarray(bundle[RAW_TS_KEY], dtype=np.float32)
-        meta_str = str(bundle[RAW_TS_META_KEY]) if RAW_TS_META_KEY in bundle.files else "{}"
-    try:
-        meta = json.loads(meta_str)
-    except json.JSONDecodeError:
-        meta = {}
-    return data, meta
+        try:
+            meta = json.loads(meta_str)
+        except json.JSONDecodeError:
+            meta = {}
+        return data, meta
+
+    # CSV path (current).
+    import pandas as pd
+
+    df = pd.read_csv(candidate)
+    arr = df.to_numpy(dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    if arr.ndim != 2:
+        raise ValueError(
+            f"Raw time-series CSV {candidate} parsed to shape {arr.shape}; expected [T, d]."
+        )
+
+    meta: dict = {}
+    sidecar = candidate + ".meta.json"
+    if os.path.exists(sidecar):
+        try:
+            with open(sidecar, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    return arr, meta
 
 
 # ---------------------------------------------------------------------------

@@ -115,7 +115,7 @@ def fetch_tdc(output_file: str, source: dict) -> int:
 
 
 def fetch_local_npy(output_file: str, source: dict) -> int:
-    """Load a .npy time-series and persist it as the canonical raw .npz.
+    """Load a .npy time-series and persist it as the canonical raw CSV.
 
     Required source keys:
         path: filesystem path to a 1-D or 2-D .npy file.
@@ -160,7 +160,7 @@ def fetch_local_npy(output_file: str, source: dict) -> int:
 
 
 def fetch_local_ts_csv(output_file: str, source: dict) -> int:
-    """Load a CSV time-series (one row per timestep) into the canonical .npz.
+    """Load a CSV time-series (one row per timestep) into the canonical raw CSV.
 
     Required source keys:
         path: filesystem path to the CSV.

@@ -440,3 +440,57 @@ def test_repeated_final_writes_progress_csv_and_partial_flag(tmp_path):
     stats = payload["test_rmse_horizons_repeated"]
     assert stats["num_runs"] == 3
     assert len(stats["runs"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Raw persistence is a real CSV (reviewer request: do not write NPZ to raw.csv)
+# ---------------------------------------------------------------------------
+
+
+def test_save_raw_timeseries_writes_real_csv(tmp_path):
+    """save_raw_timeseries must write genuine CSV bytes, not a binary archive.
+
+    Guards against regressing to "NPZ named raw.csv", which made the CSV-oriented
+    get_data_output contract emit a UTF-8 decode warning on every run.
+    """
+    series = _make_synthetic_series(T=50, d=3, seed=7)
+    csv_path = tmp_path / "raw.csv"
+    timeseries_io.save_raw_timeseries(str(csv_path), series, source_meta={"source": "synthetic"})
+
+    text = csv_path.read_text(encoding="utf-8")  # must be valid UTF-8 text
+    assert text.splitlines()[0] == "ch0,ch1,ch2"
+
+    import pandas as pd
+    df = pd.read_csv(csv_path)
+    assert df.shape == (50, 3)
+
+    sidecar = csv_path.with_suffix(".csv.meta.json")
+    assert sidecar.exists()
+    assert json.loads(sidecar.read_text())["source"] == "synthetic"
+
+
+def test_save_load_raw_timeseries_csv_roundtrip_is_lossless(tmp_path):
+    """float32 -> CSV -> float32 must be bit-identical (%.9g preserves single precision)."""
+    series = _make_synthetic_series(T=200, d=4, seed=42).astype(np.float32)
+    csv_path = tmp_path / "raw.csv"
+    timeseries_io.save_raw_timeseries(str(csv_path), series)
+
+    loaded, _meta = timeseries_io.load_raw_timeseries(str(csv_path))
+    assert loaded.shape == series.shape
+    assert loaded.dtype == np.float32
+    assert np.array_equal(loaded, series)
+
+
+def test_load_raw_timeseries_back_compatible_with_legacy_npz(tmp_path):
+    """Legacy .npz raw artifacts still load (PK magic-header sniff)."""
+    series = _make_synthetic_series(T=80, d=2, seed=3).astype(np.float32)
+    legacy = tmp_path / "raw.csv"  # legacy misnamed path
+    meta_str = '{"data_source": "local_npy", "shape": [80, 2]}'
+    with open(legacy, "wb") as fh:
+        np.savez(fh, **{
+            timeseries_io.RAW_TS_KEY: series,
+            timeseries_io.RAW_TS_META_KEY: np.array(meta_str),
+        })
+    loaded, meta = timeseries_io.load_raw_timeseries(str(legacy))
+    assert loaded.shape == (80, 2)
+    assert meta["data_source"] == "local_npy"
