@@ -69,6 +69,12 @@ class ProfileSpec:
     supports_split: bool
     supports_analyze: bool
     supports_explain: bool
+    # Data sources this profile accepts for get_data.data_source. When empty
+    # (the default), only `default_source` is accepted — preserving the prior
+    # single-source behavior for every existing profile. Profiles that accept
+    # several interchangeable sources (e.g. ts_forecast takes both local_npy
+    # and local_ts_csv) list them all here.
+    allowed_sources: tuple[str, ...] = ()
 
     def allows_model(self, model_type: str) -> bool:
         allowed = set(self.allowed_models)
@@ -83,6 +89,15 @@ class ProfileSpec:
 
     def allows_feature_input(self, feature_input: str) -> bool:
         return feature_input in set(self.allowed_feature_inputs)
+
+    def source_choices(self) -> tuple[str, ...]:
+        """The set of get_data.data_source values this profile accepts."""
+        if self.allowed_sources:
+            return self.allowed_sources
+        return (self.default_source,)
+
+    def allows_source(self, source_type: str) -> bool:
+        return source_type in self.source_choices()
 
 
 PROFILE_SPECS: dict[str, ProfileSpec] = {
@@ -187,6 +202,7 @@ PROFILE_SPECS: dict[str, ProfileSpec] = {
         task_type="regression",
         train_node="train.timeseries",
         default_source="local_npy",
+        allowed_sources=("local_npy", "local_ts_csv"),
         # Time-series pipelines bypass tabular feature_input entirely; the
         # profile pins it to "none" so DOE generation does not attempt to
         # vary featurize.* axes that do not exist on this branch.
@@ -1311,14 +1327,15 @@ def _validate_case(
         )
 
     if "get_data" in nodes:
-        if source_type and source_type != profile.default_source:
+        if source_type and not profile.allows_source(source_type):
+            choices = ", ".join(profile.source_choices())
             _add_issue(
                 issues,
                 code="DOE_SOURCE_NOT_SUPPORTED_FOR_PROFILE",
                 path="get_data.data_source",
                 message=(
-                    f"Profile {profile.name!r} expects get_data.data_source={profile.default_source!r}, "
-                    f"but got {source_type!r}."
+                    f"Profile {profile.name!r} expects get_data.data_source "
+                    f"in {{{choices}}}, but got {source_type!r}."
                 ),
             )
         if source_type == "local_csv" and not str(_get_dotted(config, "get_data.source.path", "")).strip():

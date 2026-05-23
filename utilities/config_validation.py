@@ -271,6 +271,62 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
             )
         )
 
+    if "train.timeseries" in nodes:
+        # train.timeseries reads the `train` block (model + params) and the
+        # `split` block (segment lengths). Both are required; without them the
+        # node fails deep inside the trainer with a less helpful error, so we
+        # surface the problem here in strict config validation.
+        if "train" not in blocks_present:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_MISSING_BLOCK_FOR_NODE",
+                    path="train",
+                    message="Pipeline contains train.timeseries node but train block is missing.",
+                )
+            )
+        else:
+            ts_model_cfg = _as_dict(_as_dict(config.get("train")).get("model"))
+            if not ts_model_cfg.get("type"):
+                issues.append(
+                    ValidationIssue(
+                        code="CFG_MISSING_TRAIN_MODEL_TYPE",
+                        path="train.model.type",
+                        message="train.model.type is required for train.timeseries.",
+                    )
+                )
+        if "split" not in blocks_present:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_MISSING_BLOCK_FOR_NODE",
+                    path="split",
+                    message="Pipeline contains train.timeseries node but split block is missing.",
+                )
+            )
+        else:
+            split_cfg = _as_dict(config.get("split"))
+            for key in ("warmup_len", "train_len", "val_len", "test_len"):
+                value = split_cfg.get(key)
+                if value is None:
+                    issues.append(
+                        ValidationIssue(
+                            code="CFG_MISSING_SPLIT_FIELD",
+                            path=f"split.{key}",
+                            message=f"split.{key} is required for train.timeseries.",
+                        )
+                    )
+                else:
+                    try:
+                        if int(value) <= 0:
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        issues.append(
+                            ValidationIssue(
+                                code="CFG_INVALID_SPLIT_FIELD",
+                                path=f"split.{key}",
+                                message=f"split.{key} must be a positive integer.",
+                            )
+                        )
+
     if "train" in blocks_present and not isinstance(config.get("train"), dict):
         issues.append(
             ValidationIssue(

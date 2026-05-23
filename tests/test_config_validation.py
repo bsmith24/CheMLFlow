@@ -300,3 +300,65 @@ def test_strict_rejects_tdc_profile_wrong_model_type() -> None:
     issues = collect_config_issues(cfg, ["get_data", "train.tdc"])
     codes = {issue.code for issue in issues}
     assert "CFG_MODEL_NOT_SUPPORTED_FOR_PROFILE" in codes
+
+
+# ---------------------------------------------------------------------------
+# train.timeseries strict validation (requires train.model.type + split fields)
+# ---------------------------------------------------------------------------
+
+
+def _ts_nodes() -> list[str]:
+    return ["get_data", "train.timeseries"]
+
+
+def test_timeseries_missing_train_and_split_blocks_flagged() -> None:
+    cfg = {
+        "global": {"pipeline_type": "timeseries", "base_dir": "data/ts",
+                   "thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": _ts_nodes(), "feature_input": "none"},
+        "get_data": {"data_source": "local_npy", "source": {"path": "data/x.npy"}},
+    }
+    codes = {i.code for i in collect_config_issues(cfg, _ts_nodes())}
+    assert "CFG_MISSING_BLOCK_FOR_NODE" in codes  # train and/or split missing
+
+
+def test_timeseries_missing_model_type_and_split_field_flagged() -> None:
+    cfg = {
+        "global": {"pipeline_type": "timeseries", "base_dir": "data/ts",
+                   "thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": _ts_nodes(), "feature_input": "none"},
+        "get_data": {"data_source": "local_npy", "source": {"path": "data/x.npy"}},
+        "train": {"model": {}},
+        "split": {"warmup_len": 100, "train_len": 500, "val_len": 100},  # test_len missing
+    }
+    codes = {i.code for i in collect_config_issues(cfg, _ts_nodes())}
+    assert "CFG_MISSING_TRAIN_MODEL_TYPE" in codes
+    assert "CFG_MISSING_SPLIT_FIELD" in codes
+
+
+def test_timeseries_nonpositive_split_field_flagged() -> None:
+    cfg = {
+        "global": {"pipeline_type": "timeseries", "base_dir": "data/ts",
+                   "thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": _ts_nodes(), "feature_input": "none"},
+        "get_data": {"data_source": "local_npy", "source": {"path": "data/x.npy"}},
+        "train": {"model": {"type": "dl_adaptive_nvar"}},
+        "split": {"warmup_len": 100, "train_len": 0, "val_len": 100, "test_len": 100},
+    }
+    codes = {i.code for i in collect_config_issues(cfg, _ts_nodes())}
+    assert "CFG_INVALID_SPLIT_FIELD" in codes
+
+
+def test_timeseries_valid_config_has_no_ts_issues() -> None:
+    cfg = {
+        "global": {"pipeline_type": "timeseries", "base_dir": "data/ts",
+                   "thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": _ts_nodes(), "feature_input": "none"},
+        "get_data": {"data_source": "local_npy", "source": {"path": "data/x.npy"}},
+        "train": {"model": {"type": "dl_adaptive_nvar"}},
+        "split": {"warmup_len": 100, "train_len": 500, "val_len": 100, "test_len": 100},
+    }
+    codes = {i.code for i in collect_config_issues(cfg, _ts_nodes())}
+    for bad in ("CFG_MISSING_TRAIN_MODEL_TYPE", "CFG_MISSING_SPLIT_FIELD",
+                "CFG_INVALID_SPLIT_FIELD"):
+        assert bad not in codes
