@@ -494,3 +494,161 @@ def test_load_raw_timeseries_back_compatible_with_legacy_npz(tmp_path):
     loaded, meta = timeseries_io.load_raw_timeseries(str(legacy))
     assert loaded.shape == (80, 2)
     assert meta["data_source"] == "local_npy"
+
+
+# ---------------------------------------------------------------------------
+# Rollout plotting (notebook "Test_pred_vs_truth_*.png")
+# ---------------------------------------------------------------------------
+
+
+def test_plot_rollout_vs_truth_writes_png(tmp_path):
+    """The rollout plot helper writes a PNG from concatenated arrays."""
+    pytest.importorskip("matplotlib")
+    from MLModels.training import timeseries_plots
+
+    rng = np.random.default_rng(0)
+    n = 200
+    true = np.sin(np.linspace(0, 12, n)).astype(np.float32)
+    pred = (true + rng.normal(0, 0.05, n)).astype(np.float32)
+    noisy = (true + rng.normal(0, 0.1, n)).astype(np.float32)
+
+    path = timeseries_plots.plot_rollout_vs_truth(
+        output_dir=str(tmp_path),
+        model_type="dl_adaptive_nvar",
+        segment="test",
+        pred=pred,
+        true=true,
+        noisy=noisy,
+        num_windows=10,
+        dataset_noise_scale=0.0,
+        k=30,
+        hidden_dim=50,
+    )
+    assert path is not None
+    assert os.path.exists(path)
+    assert path.endswith(".png")
+    assert os.path.getsize(path) > 0
+    # Filename echoes the notebook convention (k / hd / noise tags present).
+    assert "test_pred_vs_truth" in os.path.basename(path)
+    assert "k30" in os.path.basename(path)
+    assert "hd50" in os.path.basename(path)
+
+
+def test_plot_rollouts_from_npz_renders_present_segments(tmp_path):
+    """plot_rollouts_from_npz draws only the segments present in the npz."""
+    pytest.importorskip("matplotlib")
+    from MLModels.training import timeseries_plots
+
+    n = 100
+    base = np.cos(np.linspace(0, 8, n)).astype(np.float32)
+    npz_path = tmp_path / "dl_adaptive_nvar_predictions.npz"
+    # Only test + val present; train intentionally omitted.
+    np.savez(
+        npz_path,
+        test_pred=base, test_true=base, test_noisy=base,
+        val_pred=base, val_true=base, val_noisy=base,
+    )
+    written = timeseries_plots.plot_rollouts_from_npz(
+        predictions_path=str(npz_path),
+        output_dir=str(tmp_path),
+        model_type="dl_adaptive_nvar",
+        num_windows=5,
+        dataset_noise_scale=0.0,
+        k=2,
+        hidden_dim=10,
+    )
+    names = [os.path.basename(p) for p in written]
+    assert any("test_pred_vs_truth" in nm for nm in names)
+    assert any("val_pred_vs_truth" in nm for nm in names)
+    assert not any("train_pred_vs_truth" in nm for nm in names)  # absent in npz
+
+
+def test_plot_rollouts_from_npz_missing_file_is_safe(tmp_path):
+    """A missing predictions npz yields no plots and does not raise."""
+    pytest.importorskip("matplotlib")
+    from MLModels.training import timeseries_plots
+    written = timeseries_plots.plot_rollouts_from_npz(
+        predictions_path=str(tmp_path / "nope.npz"),
+        output_dir=str(tmp_path),
+        model_type="dl_adaptive_nvar",
+        num_windows=5,
+    )
+    assert written == []
+
+
+# ---------------------------------------------------------------------------
+# Noise labeling in the rollout plot (pipeline-applied dataset_noise_scale)
+# ---------------------------------------------------------------------------
+
+
+def test_plot_noise_label_when_noise_added(tmp_path):
+    """With dataset_noise_scale>0 the title names the parameter and the legend
+    marks the observed line as added relative-sigma noise."""
+    pytest.importorskip("matplotlib")
+    import matplotlib
+    matplotlib.use("Agg", force=False)
+    import matplotlib.pyplot as plt
+    from MLModels.training import timeseries_plots
+
+    n = 100
+    true = np.cos(np.linspace(0, 8, n)).astype(np.float32)
+    noisy = (true + 0.1).astype(np.float32)
+
+    # Patch savefig to capture the live Axes before the figure is closed.
+    captured = {}
+    orig_savefig = plt.Figure.savefig
+    def _capture(self, *a, **k):
+        ax = self.axes[0]
+        captured["title"] = ax.get_title()
+        captured["legend"] = [t.get_text() for t in ax.get_legend().get_texts()]
+        return orig_savefig(self, *a, **k)
+    plt.Figure.savefig = _capture
+    try:
+        timeseries_plots.plot_rollout_vs_truth(
+            output_dir=str(tmp_path), model_type="dl_adaptive_nvar", segment="test",
+            pred=true, true=true, noisy=noisy, num_windows=5,
+            dataset_noise_scale=0.20, k=30, hidden_dim=50,
+        )
+    finally:
+        plt.Figure.savefig = orig_savefig
+
+    assert "dataset_noise_scale=0.20" in captured["title"]
+    assert "20% \u03c3 added" in captured["title"]
+    assert any("20% \u03c3 added" in lbl for lbl in captured["legend"])
+    # The clean truth and prediction are always present.
+    assert any("Ground Truth" in lbl for lbl in captured["legend"])
+
+
+def test_plot_noise_label_when_no_noise(tmp_path):
+    """With dataset_noise_scale==0 the title says 'no noise added' and the
+    redundant noisy line is dropped from the legend."""
+    pytest.importorskip("matplotlib")
+    import matplotlib
+    matplotlib.use("Agg", force=False)
+    import matplotlib.pyplot as plt
+    from MLModels.training import timeseries_plots
+
+    n = 100
+    true = np.cos(np.linspace(0, 8, n)).astype(np.float32)
+
+    captured = {}
+    orig_savefig = plt.Figure.savefig
+    def _capture(self, *a, **k):
+        ax = self.axes[0]
+        captured["title"] = ax.get_title()
+        captured["legend"] = [t.get_text() for t in ax.get_legend().get_texts()]
+        return orig_savefig(self, *a, **k)
+    plt.Figure.savefig = _capture
+    try:
+        timeseries_plots.plot_rollout_vs_truth(
+            output_dir=str(tmp_path), model_type="dl_adaptive_nvar", segment="test",
+            pred=true, true=true, noisy=true.copy(), num_windows=5,
+            dataset_noise_scale=0.0, k=30, hidden_dim=50,
+        )
+    finally:
+        plt.Figure.savefig = orig_savefig
+
+    assert "no noise added" in captured["title"]
+    # No "noisy"/"observed" entry in the legend when nothing was added.
+    assert not any("added" in lbl.lower() for lbl in captured["legend"])
+    assert not any("observed" in lbl.lower() for lbl in captured["legend"])
