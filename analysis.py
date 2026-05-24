@@ -913,35 +913,58 @@ def _mark_missing_metric_jobs(jobs: list[ChildJob]) -> list[ChildJob]:
     return updated
 
 
+def _eval_segment_metrics(split_metrics: dict[str, Any]) -> tuple[dict[str, Any], str] | tuple[None, None]:
+    """Return (eval_dict, segment_name) the way the trainer chooses it: test if
+    present and non-empty, otherwise val.
+
+    Time-series runs may legitimately have test_len=0 with val_len>0 (the strict
+    validator and parse_split_config both allow this). In that case the trainer
+    scores on val and writes val metrics with an empty test dict, so analysis
+    must fall back to val to recognize the run as complete — mirroring
+    MLModels.training.timeseries_nvar's `primary_target = test if test else val`.
+    """
+    test = split_metrics.get("test")
+    if isinstance(test, dict) and test:
+        return test, "test"
+    val = split_metrics.get("val")
+    if isinstance(val, dict) and val:
+        return val, "val"
+    return None, None
+
+
 def _extract_primary_metric(split_metrics: dict[str, Any]) -> str | None:
     train = split_metrics.get("train")
-    test = split_metrics.get("test")
-    if not isinstance(train, dict) or not isinstance(test, dict):
+    if not isinstance(train, dict):
+        return None
+    # Evaluation segment is test if present, else val (matches the trainer and
+    # the validator, which allow test_len=0 when val_len>0).
+    eval_metrics, _segment = _eval_segment_metrics(split_metrics)
+    if eval_metrics is None:
         return None
     # Prefer "higher-is-better" metrics for a clean generalization gap signal.
     for candidate in ("r2", "auc", "auprc", "accuracy", "f1"):
-        if candidate in train and candidate in test:
-            if _safe_float(train.get(candidate)) is not None and _safe_float(test.get(candidate)) is not None:
+        if candidate in train and candidate in eval_metrics:
+            if _safe_float(train.get(candidate)) is not None and _safe_float(eval_metrics.get(candidate)) is not None:
                 return candidate
     # Time-series (Adaptive NVAR) workflows emit horizon-specific RMSE
     # (rmse_h25, rmse_h50, ...) and/or a plain rmse, rather than the tabular
     # classification/regression metrics above. These are lower-is-better, but
     # for the purpose of "does this run have usable split metrics?" any one of
-    # them present in both train and test is sufficient. Prefer the largest
-    # horizon (the headline forecast metric), then smaller horizons, then a
-    # bare rmse, mirroring the trainer's own primary-metric choice.
+    # them present in both train and the eval segment is sufficient. Prefer the
+    # largest horizon (the headline forecast metric), then smaller horizons,
+    # then a bare rmse, mirroring the trainer's own primary-metric choice.
     horizon_candidates = sorted(
         (
             key
             for key in train
-            if key.startswith("rmse_h") and key in test
+            if key.startswith("rmse_h") and key in eval_metrics
         ),
         key=lambda k: _horizon_sort_key(k),
         reverse=True,
     )
     for candidate in (*horizon_candidates, "rmse"):
-        if candidate in train and candidate in test:
-            if _safe_float(train.get(candidate)) is not None and _safe_float(test.get(candidate)) is not None:
+        if candidate in train and candidate in eval_metrics:
+            if _safe_float(train.get(candidate)) is not None and _safe_float(eval_metrics.get(candidate)) is not None:
                 return candidate
     return None
 
@@ -1000,16 +1023,22 @@ def _build_generalization_records(
         scientific_config_id = job.scientific_config_id or _scientific_config_id(cfg)
         execution_label = job.execution_label or _execution_label(cfg)
         train = split_metrics.get("train") or {}
-        test = split_metrics.get("test") or {}
+        eval_metrics, _eval_segment = _eval_segment_metrics(split_metrics)
+        if eval_metrics is None:
+            continue
         val = split_metrics.get("val") or {}
         train_v = _safe_float(train.get(metric_name))
-        test_v = _safe_float(test.get(metric_name))
+        # The "test" value in the generalization record is the eval segment the
+        # trainer actually used: test if present, else val (val-only runs have
+        # test_len=0). eval_segment records which one, so downstream readers
+        # aren't misled into thinking a val-only run had a held-out test set.
+        test_v = _safe_float(eval_metrics.get(metric_name))
         val_v = _safe_float(val.get(metric_name)) if isinstance(val, dict) else None
         if train_v is None or test_v is None:
             continue
-        # Overfitting = test performance worse than train. For higher-is-better
-        # metrics (r2, auc, ...) that means train - test > 0. For lower-is-better
-        # metrics (rmse, rmse_h*) it means test - train > 0, so flip the sign so
+        # Overfitting = eval performance worse than train. For higher-is-better
+        # metrics (r2, auc, ...) that means train - eval > 0. For lower-is-better
+        # metrics (rmse, rmse_h*) it means eval - train > 0, so flip the sign so
         # a positive gap consistently denotes overfitting regardless of metric.
         lower_is_better = metric_name == "rmse" or metric_name.startswith("rmse_h")
         gap = (test_v - train_v) if lower_is_better else (train_v - test_v)
@@ -1021,7 +1050,7 @@ def _build_generalization_records(
             underfit_flag = train_v < underfit_threshold_auc and test_v < underfit_threshold_auc
         # No principled absolute underfit threshold for RMSE (it's scale-dependent),
         # so underfit_flag stays False for time-series metrics; the overfit gap is
-        # still meaningful as a relative train-vs-test signal.
+        # still meaningful as a relative train-vs-eval signal.
         records.append(
             GeneralizationRecord(
                 case_name=job.case_name or cfg_path.stem,

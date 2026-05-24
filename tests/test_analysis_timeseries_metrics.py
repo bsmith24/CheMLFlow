@@ -52,3 +52,57 @@ def test_horizon_sort_key():
     assert analysis._horizon_sort_key("rmse_h100") == 100
     assert analysis._horizon_sort_key("rmse_h25") == 25
     assert analysis._horizon_sort_key("rmse") == -1  # no numeric suffix
+
+
+# ---------------------------------------------------------------------------
+# val-only runs (test_len=0, val_len>0) must be treated as complete
+# (matches trainer's `primary_target = test if test else val`)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_primary_metric_val_only_timeseries():
+    """A val-only time-series run (empty test dict) resolves a primary metric."""
+    split = {
+        "train": {"rmse_h25": 0.01, "rmse_h100": 0.04},
+        "val": {"rmse_h25": 0.03, "rmse_h100": 0.08},
+        "test": {},  # test_len=0 -> trainer wrote an empty test dict
+    }
+    assert analysis._extract_primary_metric(split) == "rmse_h100"
+
+
+def test_extract_primary_metric_val_only_missing_test_key():
+    """Same as above but with no 'test' key at all."""
+    split = {
+        "train": {"rmse_h100": 0.04},
+        "val": {"rmse_h100": 0.08},
+    }
+    assert analysis._extract_primary_metric(split) == "rmse_h100"
+
+
+def test_extract_primary_metric_prefers_test_over_val_when_present():
+    split = {
+        "train": {"rmse_h100": 0.04},
+        "val": {"rmse_h100": 0.05},
+        "test": {"rmse_h100": 0.08},
+    }
+    seg = analysis._eval_segment_metrics(split)
+    assert seg[1] == "test"
+    assert analysis._extract_primary_metric(split) == "rmse_h100"
+
+
+def test_extract_primary_metric_none_when_no_eval_segment():
+    """No usable test or val -> None (correctly incomplete)."""
+    assert analysis._extract_primary_metric({"train": {"rmse_h100": 0.04}, "test": {}, "val": {}}) is None
+
+
+def test_eval_segment_metrics_fallback_order():
+    assert analysis._eval_segment_metrics({"test": {"a": 1}, "val": {"a": 2}})[1] == "test"
+    assert analysis._eval_segment_metrics({"test": {}, "val": {"a": 2}})[1] == "val"
+    assert analysis._eval_segment_metrics({"val": {"a": 2}})[1] == "val"
+    assert analysis._eval_segment_metrics({"test": {}, "val": {}}) == (None, None)
+
+
+def test_val_only_tabular_run_also_recognized():
+    """The fix also helps tabular val-only runs (latent improvement)."""
+    split = {"train": {"r2": 0.9}, "val": {"r2": 0.6}, "test": {}}
+    assert analysis._extract_primary_metric(split) == "r2"
