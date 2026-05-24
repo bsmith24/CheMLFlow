@@ -923,7 +923,35 @@ def _extract_primary_metric(split_metrics: dict[str, Any]) -> str | None:
         if candidate in train and candidate in test:
             if _safe_float(train.get(candidate)) is not None and _safe_float(test.get(candidate)) is not None:
                 return candidate
+    # Time-series (Adaptive NVAR) workflows emit horizon-specific RMSE
+    # (rmse_h25, rmse_h50, ...) and/or a plain rmse, rather than the tabular
+    # classification/regression metrics above. These are lower-is-better, but
+    # for the purpose of "does this run have usable split metrics?" any one of
+    # them present in both train and test is sufficient. Prefer the largest
+    # horizon (the headline forecast metric), then smaller horizons, then a
+    # bare rmse, mirroring the trainer's own primary-metric choice.
+    horizon_candidates = sorted(
+        (
+            key
+            for key in train
+            if key.startswith("rmse_h") and key in test
+        ),
+        key=lambda k: _horizon_sort_key(k),
+        reverse=True,
+    )
+    for candidate in (*horizon_candidates, "rmse"):
+        if candidate in train and candidate in test:
+            if _safe_float(train.get(candidate)) is not None and _safe_float(test.get(candidate)) is not None:
+                return candidate
     return None
+
+
+def _horizon_sort_key(key: str) -> int:
+    """Sort key for 'rmse_h<N>' metric names; non-numeric suffixes sort last."""
+    try:
+        return int(key.split("rmse_h", 1)[1])
+    except (IndexError, ValueError):
+        return -1
 
 
 def _build_generalization_records(
@@ -979,13 +1007,21 @@ def _build_generalization_records(
         val_v = _safe_float(val.get(metric_name)) if isinstance(val, dict) else None
         if train_v is None or test_v is None:
             continue
-        gap = train_v - test_v
+        # Overfitting = test performance worse than train. For higher-is-better
+        # metrics (r2, auc, ...) that means train - test > 0. For lower-is-better
+        # metrics (rmse, rmse_h*) it means test - train > 0, so flip the sign so
+        # a positive gap consistently denotes overfitting regardless of metric.
+        lower_is_better = metric_name == "rmse" or metric_name.startswith("rmse_h")
+        gap = (test_v - train_v) if lower_is_better else (train_v - test_v)
         overfit_flag = gap >= overfit_threshold
         underfit_flag = False
         if metric_name == "r2":
             underfit_flag = train_v < underfit_threshold_r2 and test_v < underfit_threshold_r2
         elif metric_name in {"auc", "auprc", "accuracy", "f1"}:
             underfit_flag = train_v < underfit_threshold_auc and test_v < underfit_threshold_auc
+        # No principled absolute underfit threshold for RMSE (it's scale-dependent),
+        # so underfit_flag stays False for time-series metrics; the overfit gap is
+        # still meaningful as a relative train-vs-test signal.
         records.append(
             GeneralizationRecord(
                 case_name=job.case_name or cfg_path.stem,

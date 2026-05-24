@@ -362,3 +362,114 @@ def test_timeseries_valid_config_has_no_ts_issues() -> None:
     for bad in ("CFG_MISSING_TRAIN_MODEL_TYPE", "CFG_MISSING_SPLIT_FIELD",
                 "CFG_INVALID_SPLIT_FIELD"):
         assert bad not in codes
+
+
+# ---------------------------------------------------------------------------
+# train.timeseries split validation must MATCH parse_split_config semantics
+# ---------------------------------------------------------------------------
+
+
+def _ts_cfg(split: dict) -> dict:
+    return {
+        "global": {"pipeline_type": "timeseries", "base_dir": "data/ts",
+                   "thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": ["get_data", "train.timeseries"], "feature_input": "none"},
+        "get_data": {"data_source": "local_npy", "source": {"path": "data/x.npy"}},
+        "train": {"model": {"type": "dl_adaptive_nvar"}},
+        "split": split,
+    }
+
+
+def _split_codes(split: dict) -> set:
+    nodes = ["get_data", "train.timeseries"]
+    return {i.code for i in collect_config_issues(_ts_cfg(split), nodes) if "SPLIT" in i.code}
+
+
+def test_timeseries_warmup_zero_is_accepted() -> None:
+    # parse_split_config allows warmup_len == 0; validator must too.
+    assert _split_codes({"warmup_len": 0, "train_len": 500, "val_len": 100, "test_len": 100}) == set()
+
+
+def test_timeseries_zero_test_with_val_is_accepted() -> None:
+    assert _split_codes({"warmup_len": 50, "train_len": 500, "val_len": 100, "test_len": 0}) == set()
+
+
+def test_timeseries_zero_val_with_test_is_accepted() -> None:
+    assert _split_codes({"warmup_len": 50, "train_len": 500, "val_len": 0, "test_len": 100}) == set()
+
+
+def test_timeseries_both_eval_segments_zero_is_rejected() -> None:
+    assert "CFG_INVALID_SPLIT_FIELD" in _split_codes(
+        {"warmup_len": 50, "train_len": 500, "val_len": 0, "test_len": 0}
+    )
+
+
+def test_timeseries_train_len_zero_is_rejected() -> None:
+    assert "CFG_INVALID_SPLIT_FIELD" in _split_codes(
+        {"warmup_len": 50, "train_len": 0, "val_len": 100, "test_len": 100}
+    )
+
+
+def test_timeseries_negative_split_is_rejected() -> None:
+    assert "CFG_INVALID_SPLIT_FIELD" in _split_codes(
+        {"warmup_len": -1, "train_len": 500, "val_len": 100, "test_len": 100}
+    )
+
+
+def test_timeseries_validator_matches_parser_on_edge_cases() -> None:
+    """The strict validator must accept exactly what parse_split_config accepts."""
+    from utilities.timeseries_io import parse_split_config
+
+    edge_cases = [
+        {"warmup_len": 0, "train_len": 500, "val_len": 100, "test_len": 100},
+        {"warmup_len": 50, "train_len": 500, "val_len": 100, "test_len": 0},
+        {"warmup_len": 50, "train_len": 500, "val_len": 0, "test_len": 100},
+        {"warmup_len": 50, "train_len": 500, "val_len": 0, "test_len": 0},
+        {"warmup_len": 50, "train_len": 0, "val_len": 100, "test_len": 100},
+    ]
+    for split in edge_cases:
+        validator_ok = _split_codes(split) == set()
+        try:
+            parse_split_config(split)
+            parser_ok = True
+        except ValueError:
+            parser_ok = False
+        assert validator_ok == parser_ok, f"validator/parser disagree on {split}"
+
+
+# ---------------------------------------------------------------------------
+# time-series source/model must require the train.timeseries node
+# ---------------------------------------------------------------------------
+
+
+def test_timeseries_source_with_tabular_train_rejected() -> None:
+    cfg = {
+        "global": {"thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": ["get_data", "train"], "feature_input": "none"},
+        "get_data": {"data_source": "local_npy", "source": {"path": "d.npy"}},
+        "train": {"model": {"type": "random_forest_regressor"}},
+    }
+    codes = {i.code for i in collect_config_issues(cfg, ["get_data", "train"])}
+    assert "CFG_TIMESERIES_SOURCE_REQUIRES_TS_NODE" in codes
+
+
+def test_timeseries_model_under_tabular_train_rejected() -> None:
+    cfg = {
+        "global": {"thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": ["get_data", "train"], "feature_input": "none"},
+        "get_data": {"data_source": "local_csv", "source": {"path": "d.csv"}},
+        "train": {"model": {"type": "dl_adaptive_nvar"}},
+    }
+    codes = {i.code for i in collect_config_issues(cfg, ["get_data", "train"])}
+    assert "CFG_TIMESERIES_MODEL_REQUIRES_TS_NODE" in codes
+
+
+def test_tabular_pipeline_has_no_timeseries_issues() -> None:
+    cfg = {
+        "global": {"thresholds": {"active": 1, "inactive": 2}},
+        "pipeline": {"nodes": ["get_data", "train"], "feature_input": "none"},
+        "get_data": {"data_source": "local_csv", "source": {"path": "d.csv"}},
+        "train": {"model": {"type": "random_forest_regressor"}},
+    }
+    codes = {i.code for i in collect_config_issues(cfg, ["get_data", "train"])}
+    assert not any("TIMESERIES" in c for c in codes)

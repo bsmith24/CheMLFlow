@@ -68,6 +68,12 @@ _FEATURE_INPUT_NODES = {
     "use.curated_features",
 }
 _CHEMPROP_LIKE_MODELS = {"chemprop", "chemeleon"}
+
+# Time-series (Adaptive NVAR) pipeline. These data sources and model types
+# belong exclusively to the train.timeseries node; pairing them with the
+# tabular `train` node is a configuration error caught in strict validation.
+_TIMESERIES_DATA_SOURCES = {"local_npy", "local_ts_csv"}
+_TIMESERIES_MODELS = {"dl_adaptive_nvar", "dl_connectome_nvar"}
 _FEATURE_INPUT_ALIASES = {
     "use.curated_features": "featurize.none",
 }
@@ -304,6 +310,15 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
             )
         else:
             split_cfg = _as_dict(config.get("split"))
+            # Mirror utilities.timeseries_io.parse_split_config exactly so the
+            # strict validator accepts precisely what the runtime parser accepts:
+            #   * all four keys required and integer-valued
+            #   * each length must be >= 0 (NOT strictly positive)
+            #   * train_len must be > 0
+            #   * at least one of val_len / test_len must be > 0 (need an
+            #     evaluation segment); warmup_len == 0 and a single zero
+            #     eval segment are both allowed.
+            parsed: dict[str, int] = {}
             for key in ("warmup_len", "train_len", "val_len", "test_len"):
                 value = split_cfg.get(key)
                 if value is None:
@@ -314,18 +329,90 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
                             message=f"split.{key} is required for train.timeseries.",
                         )
                     )
-                else:
-                    try:
-                        if int(value) <= 0:
-                            raise ValueError
-                    except (TypeError, ValueError):
-                        issues.append(
-                            ValidationIssue(
-                                code="CFG_INVALID_SPLIT_FIELD",
-                                path=f"split.{key}",
-                                message=f"split.{key} must be a positive integer.",
-                            )
+                    continue
+                try:
+                    ivalue = int(value)
+                except (TypeError, ValueError):
+                    issues.append(
+                        ValidationIssue(
+                            code="CFG_INVALID_SPLIT_FIELD",
+                            path=f"split.{key}",
+                            message=f"split.{key} must be an integer.",
                         )
+                    )
+                    continue
+                if ivalue < 0:
+                    issues.append(
+                        ValidationIssue(
+                            code="CFG_INVALID_SPLIT_FIELD",
+                            path=f"split.{key}",
+                            message=f"split.{key} must be >= 0.",
+                        )
+                    )
+                    continue
+                parsed[key] = ivalue
+            # train_len must be strictly positive.
+            if parsed.get("train_len") == 0:
+                issues.append(
+                    ValidationIssue(
+                        code="CFG_INVALID_SPLIT_FIELD",
+                        path="split.train_len",
+                        message="split.train_len must be > 0 for train.timeseries.",
+                    )
+                )
+            # Need at least one evaluation segment.
+            if "val_len" in parsed and "test_len" in parsed and parsed["val_len"] == 0 and parsed["test_len"] == 0:
+                issues.append(
+                    ValidationIssue(
+                        code="CFG_INVALID_SPLIT_FIELD",
+                        path="split.test_len",
+                        message=(
+                            "train.timeseries requires val_len > 0 or test_len > 0; "
+                            "without an evaluation segment there is nothing to score."
+                        ),
+                    )
+                )
+
+    # Cross-consistency between data source, model type, and train node for the
+    # time-series pipeline. The trainer only runs under train.timeseries; using
+    # a time-series data source or model under the tabular `train` (or train.tdc)
+    # node would either crash or silently mis-handle the data, so reject it here.
+    ts_source = str(_as_dict(config.get("get_data")).get("data_source", "")).strip().lower()
+    ts_train_model_type = str(_as_dict(_as_dict(config.get("train")).get("model")).get("type", "")).strip().lower()
+    if ts_source in _TIMESERIES_DATA_SOURCES and "get_data" in nodes:
+        if "train" in nodes or "train.tdc" in nodes:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_TIMESERIES_SOURCE_REQUIRES_TS_NODE",
+                    path="pipeline.nodes",
+                    message=(
+                        f"data_source={ts_source!r} is a time-series source and must be paired with the "
+                        "'train.timeseries' node, not 'train' or 'train.tdc'."
+                    ),
+                )
+            )
+        elif "train.timeseries" not in nodes:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_TIMESERIES_SOURCE_REQUIRES_TS_NODE",
+                    path="pipeline.nodes",
+                    message=(
+                        f"data_source={ts_source!r} is a time-series source but the pipeline has no "
+                        "'train.timeseries' node."
+                    ),
+                )
+            )
+    if ts_train_model_type in _TIMESERIES_MODELS and "train" in nodes:
+        issues.append(
+            ValidationIssue(
+                code="CFG_TIMESERIES_MODEL_REQUIRES_TS_NODE",
+                path="train.model.type",
+                message=(
+                    f"model type {ts_train_model_type!r} is a time-series model and must be used with the "
+                    "'train.timeseries' node, not the tabular 'train' node."
+                ),
+            )
+        )
 
     if "train" in blocks_present and not isinstance(config.get("train"), dict):
         issues.append(
