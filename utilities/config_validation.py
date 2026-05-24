@@ -32,6 +32,7 @@ _NODE_TO_BLOCK = {
     "featurize.rdkit": "featurize",
     "featurize.rdkit_labeled": "featurize",
     "featurize.morgan": "featurize",
+    "featurize.ecfp4_rdkit": "featurize",
     "preprocess.features": "preprocess",
     "select.features": "preprocess",
     "train": "train",
@@ -62,6 +63,7 @@ _FEATURE_INPUT_NODES = {
     "featurize.rdkit",
     "featurize.rdkit_labeled",
     "featurize.morgan",
+    "featurize.ecfp4_rdkit",
     "use.curated_features",
 }
 _CHEMPROP_LIKE_MODELS = {"chemprop", "chemeleon"}
@@ -73,11 +75,25 @@ _DL_WILDCARD = "dl_*"
 _ARTIFACT_RETENTION_VALUES = {"full", "audit_light"}
 _RUNTIME_PROFILE_CONTRACTS: dict[str, dict[str, Any]] = {
     "reg_local_csv": {
-        "allowed_feature_inputs": ("none", "smiles_native", "featurize.none", "featurize.rdkit", "featurize.morgan"),
+        "allowed_feature_inputs": (
+            "none",
+            "smiles_native",
+            "featurize.none",
+            "featurize.rdkit",
+            "featurize.morgan",
+            "featurize.ecfp4_rdkit",
+        ),
         "allowed_models": ("random_forest", "svm", "decision_tree", "xgboost", "ensemble", "chemprop", "chemeleon", _DL_WILDCARD),
     },
     "reg_local_csv_ic50": {
-        "allowed_feature_inputs": ("none", "smiles_native", "featurize.none", "featurize.rdkit", "featurize.morgan"),
+        "allowed_feature_inputs": (
+            "none",
+            "smiles_native",
+            "featurize.none",
+            "featurize.rdkit",
+            "featurize.morgan",
+            "featurize.ecfp4_rdkit",
+        ),
         "allowed_models": ("random_forest", "svm", "decision_tree", "xgboost", "ensemble", "chemprop", "chemeleon", _DL_WILDCARD),
     },
     "reg_chembl_ic50": {
@@ -85,7 +101,14 @@ _RUNTIME_PROFILE_CONTRACTS: dict[str, dict[str, Any]] = {
         "allowed_models": ("random_forest", "svm", "decision_tree", "xgboost", "ensemble", _DL_WILDCARD),
     },
     "clf_local_csv": {
-        "allowed_feature_inputs": ("none", "smiles_native", "featurize.none", "featurize.rdkit", "featurize.morgan"),
+        "allowed_feature_inputs": (
+            "none",
+            "smiles_native",
+            "featurize.none",
+            "featurize.rdkit",
+            "featurize.morgan",
+            "featurize.ecfp4_rdkit",
+        ),
         "allowed_models": (
             "random_forest",
             "decision_tree",
@@ -118,6 +141,8 @@ def _normalize_feature_input(value: Any) -> str:
 
 def _feature_input_from_nodes(nodes: list[str]) -> str | None:
     lowered = [str(node).strip().lower() for node in nodes]
+    if "featurize.ecfp4_rdkit" in lowered:
+        return "featurize.ecfp4_rdkit"
     if "featurize.morgan" in lowered:
         return "featurize.morgan"
     if "featurize.rdkit_labeled" in lowered:
@@ -331,7 +356,10 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
                 path="pipeline.nodes",
                 message=(
                     "preprocess.features/select.features require an explicit feature input node "
-                    "(featurize.none/featurize.rdkit/featurize.rdkit_labeled/featurize.morgan), "
+                    "("
+                    "featurize.none/featurize.rdkit/featurize.rdkit_labeled/"
+                    "featurize.morgan/featurize.ecfp4_rdkit"
+                    "), "
                     "except for the Chemprop/CheMeleon no-op preprocess branch."
                 ),
             )
@@ -344,7 +372,10 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
                     path="pipeline.nodes",
                     message=(
                         "train for non-SMILES-native models requires an explicit feature input node "
-                        "(featurize.none/featurize.rdkit/featurize.rdkit_labeled/featurize.morgan)."
+                        "("
+                        "featurize.none/featurize.rdkit/featurize.rdkit_labeled/"
+                        "featurize.morgan/featurize.ecfp4_rdkit"
+                        ")."
                     ),
                 )
             )
