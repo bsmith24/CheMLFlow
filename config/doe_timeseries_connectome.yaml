@@ -1,0 +1,63 @@
+# ======================================================================
+# DOE spec for the time-series Connectome NVAR pipeline.
+#
+# Each DOE case is a scientifically distinct experiment. Inside every case
+# Optuna searches over architectural and optimization knobs (k, n_connectome,
+# input_scaling, lr_adam, lr_lbfgs, weight_decay) using the search space in
+# MLModels.training.dl_registry.build_timeseries_dl_search_config.
+#
+# This DOE compares:
+#   - real connectome vs degree-preserving randomized control
+#   - degree-based vs random subgraph selection
+#   - several measurement-noise levels
+# ======================================================================
+
+dataset:
+  name: mackey_glass_connectome
+  profile: ts_forecast
+  task_type: regression
+  source:
+    type: local_npy
+    path: data/ground_truth.npy
+    time_axis: cols
+  split:
+    warmup_len: 500
+    train_len: 7500
+    val_len: 1000
+    test_len: 1000
+
+defaults:
+  global.task_type: regression
+  global.random_state: 2025
+  global.base_dir: artifacts/data/doe_timeseries_connectome
+  pipeline.feature_input: none
+  train.tuning.method: optuna
+  train.tuning.n_trials: 50
+  train.tuning.trial_epoch_cap: 500
+  train.model.type: dl_connectome_nvar
+  train.model.params.connectome_xlsx: data/connectome_hermaphrodite.xlsx
+  train.model.params.connectome_sheet: hermaphrodite chemical
+  train.model.params.connectome_normalization: maxabs
+  train.model.params.connectome_binarize: false
+  train.model.params.num_windows: 10
+  train.model.params.horizons: [25, 50, 75, 100]
+  train.model.params.adam_patience: 200
+  train.model.params.lbfgs_patience: 200
+  train.model.params.max_epochs_adam: 5000
+  train.model.params.num_epochs_lbfgs: 50000
+  # Device selection — strict by default (see config/doe_timeseries.yaml).
+  train.model.params.device: cuda
+
+# Scientific factors only. The k/n_connectome/lr_adam/lr_lbfgs/input_scaling
+# axes from the notebook are no longer here — they belong to Optuna.
+search_space:
+  train.model.params.connectome_mode: [connectome, connectome_randomized]
+  train.model.params.connectome_selection_mode: [top_degree, random]
+  train.model.params.dataset_noise_scale: [0.0, 0.01, 0.05]
+  train.model.params.train_noise_scale: [0.0, 0.05]
+
+selection:
+  max_cases: null
+
+output:
+  dir: doe/timeseries_connectome

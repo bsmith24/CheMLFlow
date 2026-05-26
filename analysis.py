@@ -114,6 +114,16 @@ METRIC_FIELDS = [
 ]
 
 
+# Time-series (Adaptive NVAR) horizon RMSE columns. Emitted alongside the
+# tabular metrics so DOE analysis CSVs surface per-horizon rollout error for
+# train/val/test. Purely additive: non-time-series runs leave these blank.
+HORIZON_RMSE_FIELDS = [
+    f"{segment}_rmse_h{h}"
+    for segment in ("train", "val", "test")
+    for h in (25, 50, 75, 100)
+]
+
+
 RUN_METRIC_CSV_FIELDS = [
     "case_name",
     "group_index",
@@ -139,7 +149,7 @@ RUN_METRIC_CSV_FIELDS = [
     "run_dirs",
     "metrics_path",
     "metrics_paths",
-] + METRIC_FIELDS + [f"{field}_std" for field in METRIC_FIELDS]
+] + METRIC_FIELDS + [f"{field}_std" for field in METRIC_FIELDS] + HORIZON_RMSE_FIELDS
 
 
 def _parse_args() -> argparse.Namespace:
@@ -903,17 +913,68 @@ def _mark_missing_metric_jobs(jobs: list[ChildJob]) -> list[ChildJob]:
     return updated
 
 
+def _eval_segment_metrics(split_metrics: dict[str, Any]) -> tuple[dict[str, Any], str] | tuple[None, None]:
+    """Return (eval_dict, segment_name) the way the trainer chooses it: test if
+    present and non-empty, otherwise val.
+
+    Time-series runs may legitimately have test_len=0 with val_len>0 (the strict
+    validator and parse_split_config both allow this). In that case the trainer
+    scores on val and writes val metrics with an empty test dict, so analysis
+    must fall back to val to recognize the run as complete — mirroring
+    MLModels.training.timeseries_nvar's `primary_target = test if test else val`.
+    """
+    test = split_metrics.get("test")
+    if isinstance(test, dict) and test:
+        return test, "test"
+    val = split_metrics.get("val")
+    if isinstance(val, dict) and val:
+        return val, "val"
+    return None, None
+
+
 def _extract_primary_metric(split_metrics: dict[str, Any]) -> str | None:
     train = split_metrics.get("train")
-    test = split_metrics.get("test")
-    if not isinstance(train, dict) or not isinstance(test, dict):
+    if not isinstance(train, dict):
+        return None
+    # Evaluation segment is test if present, else val (matches the trainer and
+    # the validator, which allow test_len=0 when val_len>0).
+    eval_metrics, _segment = _eval_segment_metrics(split_metrics)
+    if eval_metrics is None:
         return None
     # Prefer "higher-is-better" metrics for a clean generalization gap signal.
     for candidate in ("r2", "auc", "auprc", "accuracy", "f1"):
-        if candidate in train and candidate in test:
-            if _safe_float(train.get(candidate)) is not None and _safe_float(test.get(candidate)) is not None:
+        if candidate in train and candidate in eval_metrics:
+            if _safe_float(train.get(candidate)) is not None and _safe_float(eval_metrics.get(candidate)) is not None:
+                return candidate
+    # Time-series (Adaptive NVAR) workflows emit horizon-specific RMSE
+    # (rmse_h25, rmse_h50, ...) and/or a plain rmse, rather than the tabular
+    # classification/regression metrics above. These are lower-is-better, but
+    # for the purpose of "does this run have usable split metrics?" any one of
+    # them present in both train and the eval segment is sufficient. Prefer the
+    # largest horizon (the headline forecast metric), then smaller horizons,
+    # then a bare rmse, mirroring the trainer's own primary-metric choice.
+    horizon_candidates = sorted(
+        (
+            key
+            for key in train
+            if key.startswith("rmse_h") and key in eval_metrics
+        ),
+        key=lambda k: _horizon_sort_key(k),
+        reverse=True,
+    )
+    for candidate in (*horizon_candidates, "rmse"):
+        if candidate in train and candidate in eval_metrics:
+            if _safe_float(train.get(candidate)) is not None and _safe_float(eval_metrics.get(candidate)) is not None:
                 return candidate
     return None
+
+
+def _horizon_sort_key(key: str) -> int:
+    """Sort key for 'rmse_h<N>' metric names; non-numeric suffixes sort last."""
+    try:
+        return int(key.split("rmse_h", 1)[1])
+    except (IndexError, ValueError):
+        return -1
 
 
 def _build_generalization_records(
@@ -962,20 +1023,34 @@ def _build_generalization_records(
         scientific_config_id = job.scientific_config_id or _scientific_config_id(cfg)
         execution_label = job.execution_label or _execution_label(cfg)
         train = split_metrics.get("train") or {}
-        test = split_metrics.get("test") or {}
+        eval_metrics, _eval_segment = _eval_segment_metrics(split_metrics)
+        if eval_metrics is None:
+            continue
         val = split_metrics.get("val") or {}
         train_v = _safe_float(train.get(metric_name))
-        test_v = _safe_float(test.get(metric_name))
+        # The "test" value in the generalization record is the eval segment the
+        # trainer actually used: test if present, else val (val-only runs have
+        # test_len=0). eval_segment records which one, so downstream readers
+        # aren't misled into thinking a val-only run had a held-out test set.
+        test_v = _safe_float(eval_metrics.get(metric_name))
         val_v = _safe_float(val.get(metric_name)) if isinstance(val, dict) else None
         if train_v is None or test_v is None:
             continue
-        gap = train_v - test_v
+        # Overfitting = eval performance worse than train. For higher-is-better
+        # metrics (r2, auc, ...) that means train - eval > 0. For lower-is-better
+        # metrics (rmse, rmse_h*) it means eval - train > 0, so flip the sign so
+        # a positive gap consistently denotes overfitting regardless of metric.
+        lower_is_better = metric_name == "rmse" or metric_name.startswith("rmse_h")
+        gap = (test_v - train_v) if lower_is_better else (train_v - test_v)
         overfit_flag = gap >= overfit_threshold
         underfit_flag = False
         if metric_name == "r2":
             underfit_flag = train_v < underfit_threshold_r2 and test_v < underfit_threshold_r2
         elif metric_name in {"auc", "auprc", "accuracy", "f1"}:
             underfit_flag = train_v < underfit_threshold_auc and test_v < underfit_threshold_auc
+        # No principled absolute underfit threshold for RMSE (it's scale-dependent),
+        # so underfit_flag stays False for time-series metrics; the overfit gap is
+        # still meaningful as a relative train-vs-eval signal.
         records.append(
             GeneralizationRecord(
                 case_name=job.case_name or cfg_path.stem,
@@ -1387,12 +1462,54 @@ def _build_all_runs_metric_rows(jobs: list[ChildJob]) -> list[dict[str, Any]]:
                 "train_f1": train_split.get("f1", ""),
                 "test_f1": test_split.get("f1", ""),
                 "val_f1": val_split.get("f1", ""),
+                **{
+                    f"{segment}_rmse_h{h}": _pick_horizon_metric(
+                        segment, h, split_metrics, top_metrics
+                    )
+                    for segment in ("train", "val", "test")
+                    for h in (25, 50, 75, 100)
+                },
             }
         )
         for metric_field in METRIC_FIELDS:
             rows[-1][f"{metric_field}_std"] = ""
 
     return rows
+
+
+def _pick_horizon_metric(
+    segment: str,
+    horizon: int,
+    split_metrics: dict[str, Any] | None,
+    top_metrics: dict[str, Any] | None,
+) -> Any:
+    """Pick the best available RMSE@horizon value for analysis CSVs.
+
+    Preference order:
+    1. repeated final-test mean from metrics.json,
+    2. repeated mean from split_metrics.json,
+    3. canonical split value (which may already be the repeated mean after the
+       time-series trainer finishes all final runs).
+    """
+    key = f"rmse_h{horizon}"
+    repeated_name = f"{segment}_rmse_horizons_repeated"
+    top_repeated = (top_metrics or {}).get(repeated_name)
+    if isinstance(top_repeated, dict):
+        value = top_repeated.get(f"{key}_mean")
+        if value != "" and value is not None:
+            return value
+    if isinstance(split_metrics, dict):
+        split_repeated = split_metrics.get(f"{segment}_repeated")
+        if isinstance(split_repeated, dict):
+            value = split_repeated.get(f"{key}_mean")
+            if value != "" and value is not None:
+                return value
+        split_values = split_metrics.get(segment)
+        if isinstance(split_values, dict):
+            value = split_values.get(key)
+            if value != "" and value is not None:
+                return value
+    return ""
 
 
 def _aggregate_all_runs_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

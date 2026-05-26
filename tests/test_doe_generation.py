@@ -1373,3 +1373,44 @@ def test_generate_doe_requires_max_cases_for_large_grid(tmp_path: Path) -> None:
 
     with pytest.raises(DOEGenerationError, match="constraints.max_cases"):
         generate_doe(spec)
+
+
+# ---------------------------------------------------------------------------
+# ts_forecast accepts both local_npy and local_ts_csv (allowed_sources)
+# ---------------------------------------------------------------------------
+
+
+def test_ts_forecast_profile_allows_both_sources() -> None:
+    from utilities.doe import PROFILE_SPECS
+    ts = PROFILE_SPECS["ts_forecast"]
+    assert ts.allows_source("local_npy")
+    assert ts.allows_source("local_ts_csv")
+    assert not ts.allows_source("local_csv")
+    assert set(ts.source_choices()) == {"local_npy", "local_ts_csv"}
+
+
+def test_validate_case_accepts_local_ts_csv_for_ts_forecast() -> None:
+    from utilities.doe import PROFILE_SPECS, _validate_case
+    ts = PROFILE_SPECS["ts_forecast"]
+    base = {
+        "pipeline": {"nodes": ["get_data", "train.timeseries"]},
+        "train": {"model": {"type": "dl_adaptive_nvar"}},
+        "split": {"warmup_len": 100, "train_len": 500, "val_len": 100, "test_len": 100},
+    }
+    for src in ("local_npy", "local_ts_csv"):
+        cfg = {**base, "get_data": {"data_source": src, "source": {"path": "data/x"}}}
+        codes = [i.code for i in _validate_case(ts, cfg, {})]
+        assert "DOE_SOURCE_NOT_SUPPORTED_FOR_PROFILE" not in codes, (src, codes)
+    # A truly unsupported source is still rejected.
+    cfg = {**base, "get_data": {"data_source": "local_csv", "source": {"path": "data/x.csv"}}}
+    codes = [i.code for i in _validate_case(ts, cfg, {})]
+    assert "DOE_SOURCE_NOT_SUPPORTED_FOR_PROFILE" in codes
+
+
+def test_other_profiles_unaffected_by_allowed_sources_default() -> None:
+    """Profiles without explicit allowed_sources still accept only their default."""
+    from utilities.doe import PROFILE_SPECS
+    reg = PROFILE_SPECS["reg_local_csv"]
+    assert reg.source_choices() == ("local_csv",)
+    assert reg.allows_source("local_csv")
+    assert not reg.allows_source("local_npy")

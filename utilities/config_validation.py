@@ -37,6 +37,7 @@ _NODE_TO_BLOCK = {
     "select.features": "preprocess",
     "train": "train",
     "train.tdc": "train_tdc",
+    "train.timeseries": "train",
     "analyze.stats": "analyze",
     "analyze.eda": "analyze",
 }
@@ -67,6 +68,12 @@ _FEATURE_INPUT_NODES = {
     "use.curated_features",
 }
 _CHEMPROP_LIKE_MODELS = {"chemprop", "chemeleon"}
+
+# Time-series (Adaptive NVAR) pipeline. These data sources and model types
+# belong exclusively to the train.timeseries node; pairing them with the
+# tabular `train` node is a configuration error caught in strict validation.
+_TIMESERIES_DATA_SOURCES = {"local_npy", "local_ts_csv"}
+_TIMESERIES_MODELS = {"dl_adaptive_nvar", "dl_connectome_nvar"}
 _FEATURE_INPUT_ALIASES = {
     "use.curated_features": "featurize.none",
 }
@@ -196,6 +203,13 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
         if block:
             allowed_blocks.add(block)
 
+    # Some nodes draw from multiple top-level blocks. train.timeseries reads
+    # both `train` (model + params) and `split` (warmup/train/val/test lengths)
+    # without participating in the standard `split` node, so the `split` block
+    # is allowed even though the `split` node is forbidden in this pipeline.
+    if "train.timeseries" in nodes:
+        allowed_blocks.add("split")
+
     # Top-level block validity.
     for block in blocks_present:
         if block == "model":
@@ -260,6 +274,143 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
                 code="CFG_MISSING_BLOCK_FOR_NODE",
                 path="train_tdc",
                 message="Pipeline contains train.tdc node but train_tdc block is missing.",
+            )
+        )
+
+    if "train.timeseries" in nodes:
+        # train.timeseries reads the `train` block (model + params) and the
+        # `split` block (segment lengths). Both are required; without them the
+        # node fails deep inside the trainer with a less helpful error, so we
+        # surface the problem here in strict config validation.
+        if "train" not in blocks_present:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_MISSING_BLOCK_FOR_NODE",
+                    path="train",
+                    message="Pipeline contains train.timeseries node but train block is missing.",
+                )
+            )
+        else:
+            ts_model_cfg = _as_dict(_as_dict(config.get("train")).get("model"))
+            if not ts_model_cfg.get("type"):
+                issues.append(
+                    ValidationIssue(
+                        code="CFG_MISSING_TRAIN_MODEL_TYPE",
+                        path="train.model.type",
+                        message="train.model.type is required for train.timeseries.",
+                    )
+                )
+        if "split" not in blocks_present:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_MISSING_BLOCK_FOR_NODE",
+                    path="split",
+                    message="Pipeline contains train.timeseries node but split block is missing.",
+                )
+            )
+        else:
+            split_cfg = _as_dict(config.get("split"))
+            # Mirror utilities.timeseries_io.parse_split_config exactly so the
+            # strict validator accepts precisely what the runtime parser accepts:
+            #   * all four keys required and integer-valued
+            #   * each length must be >= 0 (NOT strictly positive)
+            #   * train_len must be > 0
+            #   * at least one of val_len / test_len must be > 0 (need an
+            #     evaluation segment); warmup_len == 0 and a single zero
+            #     eval segment are both allowed.
+            parsed: dict[str, int] = {}
+            for key in ("warmup_len", "train_len", "val_len", "test_len"):
+                value = split_cfg.get(key)
+                if value is None:
+                    issues.append(
+                        ValidationIssue(
+                            code="CFG_MISSING_SPLIT_FIELD",
+                            path=f"split.{key}",
+                            message=f"split.{key} is required for train.timeseries.",
+                        )
+                    )
+                    continue
+                try:
+                    ivalue = int(value)
+                except (TypeError, ValueError):
+                    issues.append(
+                        ValidationIssue(
+                            code="CFG_INVALID_SPLIT_FIELD",
+                            path=f"split.{key}",
+                            message=f"split.{key} must be an integer.",
+                        )
+                    )
+                    continue
+                if ivalue < 0:
+                    issues.append(
+                        ValidationIssue(
+                            code="CFG_INVALID_SPLIT_FIELD",
+                            path=f"split.{key}",
+                            message=f"split.{key} must be >= 0.",
+                        )
+                    )
+                    continue
+                parsed[key] = ivalue
+            # train_len must be strictly positive.
+            if parsed.get("train_len") == 0:
+                issues.append(
+                    ValidationIssue(
+                        code="CFG_INVALID_SPLIT_FIELD",
+                        path="split.train_len",
+                        message="split.train_len must be > 0 for train.timeseries.",
+                    )
+                )
+            # Need at least one evaluation segment.
+            if "val_len" in parsed and "test_len" in parsed and parsed["val_len"] == 0 and parsed["test_len"] == 0:
+                issues.append(
+                    ValidationIssue(
+                        code="CFG_INVALID_SPLIT_FIELD",
+                        path="split.test_len",
+                        message=(
+                            "train.timeseries requires val_len > 0 or test_len > 0; "
+                            "without an evaluation segment there is nothing to score."
+                        ),
+                    )
+                )
+
+    # Cross-consistency between data source, model type, and train node for the
+    # time-series pipeline. The trainer only runs under train.timeseries; using
+    # a time-series data source or model under the tabular `train` (or train.tdc)
+    # node would either crash or silently mis-handle the data, so reject it here.
+    ts_source = str(_as_dict(config.get("get_data")).get("data_source", "")).strip().lower()
+    ts_train_model_type = str(_as_dict(_as_dict(config.get("train")).get("model")).get("type", "")).strip().lower()
+    if ts_source in _TIMESERIES_DATA_SOURCES and "get_data" in nodes:
+        if "train" in nodes or "train.tdc" in nodes:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_TIMESERIES_SOURCE_REQUIRES_TS_NODE",
+                    path="pipeline.nodes",
+                    message=(
+                        f"data_source={ts_source!r} is a time-series source and must be paired with the "
+                        "'train.timeseries' node, not 'train' or 'train.tdc'."
+                    ),
+                )
+            )
+        elif "train.timeseries" not in nodes:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_TIMESERIES_SOURCE_REQUIRES_TS_NODE",
+                    path="pipeline.nodes",
+                    message=(
+                        f"data_source={ts_source!r} is a time-series source but the pipeline has no "
+                        "'train.timeseries' node."
+                    ),
+                )
+            )
+    if ts_train_model_type in _TIMESERIES_MODELS and "train" in nodes:
+        issues.append(
+            ValidationIssue(
+                code="CFG_TIMESERIES_MODEL_REQUIRES_TS_NODE",
+                path="train.model.type",
+                message=(
+                    f"model type {ts_train_model_type!r} is a time-series model and must be used with the "
+                    "'train.timeseries' node, not the tabular 'train' node."
+                ),
             )
         )
 
