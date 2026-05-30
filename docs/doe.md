@@ -106,6 +106,7 @@ Top-level keys:
 - `dataset`: fixed facts about the data
 - `defaults`: fixed runtime settings applied to every case
 - `search_space`: experiment axes to vary
+- `model_search`: optional model-scoped parent-level hyperparameter expansion
 - `constraints`: generation and artifact-safety settings
 - `selection`: metric preference metadata
 - `output`: generated artifact location
@@ -146,6 +147,58 @@ output:
 
 `search_space` and `defaults` use dotted paths. Scalar values are treated as
 single-value axes; lists expand into a grid.
+
+## Model Search
+
+Use `model_search` when a broad DOE should also expand model-specific
+hyperparameter candidates. Each resolved hyperparameter point becomes a parent
+case; CV fold/repeat executions remain children under that parent. Generated
+runtime YAMLs contain concrete `train.model.params` values, not unresolved search
+definitions.
+
+```yaml
+search_space:
+  train.model.type: [random_forest, xgboost, dl_simple]
+  split.strategy: [random, scaffold]
+  pipeline.feature_input: [featurize.rdkit, featurize.morgan]
+
+model_search:
+  random_forest:
+    method: grid
+    params:
+      n_estimators: [100, 300, 500]
+      max_depth: [10, 20, null]
+
+  xgboost:
+    method: random
+    n_trials: 40
+    seed: 42
+    params:
+      n_estimators: {type: int, low: 100, high: 800, step: 100}
+      learning_rate: {type: float, low: 0.01, high: 0.2, log: true}
+
+  dl_simple:
+    method: random
+    n_trials: 25
+    seed: 42
+    params:
+      hidden_dim: {type: categorical, choices: [64, 128, 256]}
+      dropout: {type: float, low: 0.0, high: 0.5}
+      batch_size: {type: categorical, choices: [32, 64, 128]}
+```
+
+`model_search.<model_type>` applies only to matching `train.model.type` cases,
+including the profile's default model when `train.model.type` is omitted.
+Unmatched `model_search` keys are rejected so typos cannot silently drop a
+hyperparameter search. `model_search` currently targets the standard
+`train.model.params` path; `train_tdc.model.params` search is not supported.
+
+`method: grid` creates the full cartesian product. `method: random` samples
+concrete parent candidates from Optuna-style distribution definitions at
+DOE-generation time; it is deterministic random sampling, not Optuna/TPE or an
+adaptive objective search. Existing runtime tuning settings such as
+`train.tuning.method: train_cv` and `train.tuning.use_hpo` remain separate
+training-time behavior.
 
 ## Generated Artifacts
 
@@ -279,9 +332,11 @@ For chemistry model comparison, prefer `split.mode: cv` with
 `split.strategy: scaffold`. Scaffold CV requires a usable SMILES column that can
 produce `canonical_smiles` in curated data.
 
-Separate hyperparameter search from evaluation design.
+Separate training-time hyperparameter search from evaluation design.
 `train.tuning.method: train_cv` is inner tuning; `split.mode: cv` or
-`nested_holdout_cv` is the outer evaluation design.
+`nested_holdout_cv` is the outer evaluation design. Use `model_search` when
+hyperparameter candidates should be fixed scientific parents that fan out across
+the same CV folds.
 
 Run a small pilot before the full DOE. Confirm metrics files, split metadata,
 runtime, and memory behavior before spending the full compute budget.

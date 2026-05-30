@@ -5,6 +5,7 @@ import itertools
 import json
 import math
 import os
+import random
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,6 +46,8 @@ _EXECUTION_ONLY_AXES = {
     "split.inner.fold_index",
     "split.inner.repeat_index",
 }
+_MODEL_SEARCH_METHODS = {"grid", "random"}
+_MODEL_PARAM_PREFIX = "train.model.params."
 _LABEL_IC50_REQUIRED_COLUMNS = ("standard_value",)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -745,6 +748,280 @@ def _expand_search_space(search_space: dict[str, Any], max_cases: int | None) ->
                 f"Expanded DOE produced more than constraints.max_cases={max_cases} combinations."
             )
     return combos
+
+
+def _model_type_from_flat(merged: dict[str, Any], default_model_type: str = "") -> str:
+    return str(merged.get("train.model.type", default_model_type)).strip()
+
+
+def _coerce_int(value: Any, path: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise DOEGenerationError(f"{path} must be an integer.") from exc
+
+
+def _coerce_float(value: Any, path: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise DOEGenerationError(f"{path} must be a number.") from exc
+
+
+def _model_search_param_key(model_type: str, param_name: Any) -> str:
+    raw = str(param_name).strip()
+    if not raw:
+        raise DOEGenerationError(f"model_search.{model_type}.params contains an empty parameter name.")
+    if raw.startswith(_MODEL_PARAM_PREFIX):
+        raw = raw.removeprefix(_MODEL_PARAM_PREFIX)
+    elif raw.startswith("params."):
+        raw = raw.removeprefix("params.")
+    elif raw.startswith("train."):
+        raise DOEGenerationError(
+            f"model_search.{model_type}.params.{raw} must be relative to train.model.params, "
+            f"for example n_estimators instead of {_MODEL_PARAM_PREFIX}n_estimators."
+        )
+    if not raw or any(not part for part in raw.split(".")):
+        raise DOEGenerationError(f"model_search.{model_type}.params.{param_name!s} is not a valid dotted param name.")
+    return f"{_MODEL_PARAM_PREFIX}{raw}"
+
+
+def _param_values(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _dotted_paths_collide(left: str, right: str) -> bool:
+    left_parts = [part for part in left.split(".") if part]
+    right_parts = [part for part in right.split(".") if part]
+    if not left_parts or not right_parts:
+        return False
+    shorter_len = min(len(left_parts), len(right_parts))
+    return left_parts[:shorter_len] == right_parts[:shorter_len]
+
+
+def _dotted_path_conflicts(existing_keys: set[str], new_keys: set[str]) -> list[str]:
+    conflicts: list[str] = []
+    for existing_key in sorted(existing_keys):
+        for new_key in sorted(new_keys):
+            if _dotted_paths_collide(existing_key, new_key):
+                conflicts.append(existing_key if existing_key == new_key else f"{existing_key} <-> {new_key}")
+    return conflicts
+
+
+def _validate_unique_model_search_grid_values(model_type: str, param_name: str, values: list[Any]) -> None:
+    seen: set[str] = set()
+    for value in values:
+        value_hash = _stable_hash(value)
+        if value_hash in seen:
+            raise DOEGenerationError(
+                f"model_search.{model_type}.params.{param_name} contains duplicate grid values."
+            )
+        seen.add(value_hash)
+
+
+def _expand_grid_model_search(model_type: str, params_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    keys = sorted(params_cfg.keys())
+    value_lists: list[list[Any]] = []
+    for key in keys:
+        value = params_cfg[key]
+        if isinstance(value, dict):
+            raise DOEGenerationError(
+                f"model_search.{model_type}.params.{key} uses distribution syntax, "
+                "but method=grid expects a scalar or list of values."
+            )
+        values = _param_values(value)
+        if not values:
+            raise DOEGenerationError(f"model_search.{model_type}.params.{key} must contain at least one value.")
+        _validate_unique_model_search_grid_values(model_type, key, values)
+        value_lists.append(values)
+    return [
+        {_model_search_param_key(model_type, key): value for key, value in zip(keys, values)}
+        for values in itertools.product(*value_lists)
+    ]
+
+
+def _required_distribution_value(model_type: str, param_name: str, spec: dict[str, Any], key: str) -> Any:
+    if key not in spec:
+        raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} is missing required {key!r}.")
+    return spec[key]
+
+
+def _sample_distribution(model_type: str, param_name: str, spec: Any, rng: random.Random) -> Any:
+    if not isinstance(spec, dict):
+        choices = _param_values(spec)
+        if not choices:
+            raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} must contain at least one choice.")
+        return rng.choice(choices)
+
+    dist_type = str(spec.get("type", "categorical" if "choices" in spec else "")).strip().lower()
+    if dist_type == "categorical":
+        choices = _param_values(_required_distribution_value(model_type, param_name, spec, "choices"))
+        if not choices:
+            raise DOEGenerationError(f"model_search.{model_type}.params.{param_name}.choices must not be empty.")
+        return rng.choice(choices)
+    if dist_type == "bool":
+        return rng.choice([False, True])
+    if dist_type == "int":
+        base_path = f"model_search.{model_type}.params.{param_name}"
+        low = _coerce_int(_required_distribution_value(model_type, param_name, spec, "low"), f"{base_path}.low")
+        high = _coerce_int(_required_distribution_value(model_type, param_name, spec, "high"), f"{base_path}.high")
+        step = _coerce_int(spec.get("step", 1), f"{base_path}.step")
+        if step <= 0 or high < low:
+            raise DOEGenerationError(
+                f"model_search.{model_type}.params.{param_name} must satisfy low <= high and step > 0."
+            )
+        if _as_bool(spec.get("log", False)):
+            if low <= 0:
+                raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} log int low must be > 0.")
+            sampled = math.exp(rng.uniform(math.log(low), math.log(high)))
+            value = low + round((sampled - low) / step) * step
+            return max(low, min(high, int(value)))
+        choices = list(range(low, high + 1, step))
+        if not choices:
+            raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} produced no integer choices.")
+        return rng.choice(choices)
+    if dist_type == "float":
+        base_path = f"model_search.{model_type}.params.{param_name}"
+        low = _coerce_float(_required_distribution_value(model_type, param_name, spec, "low"), f"{base_path}.low")
+        high = _coerce_float(_required_distribution_value(model_type, param_name, spec, "high"), f"{base_path}.high")
+        if high < low:
+            raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} must satisfy low <= high.")
+        if _as_bool(spec.get("log", False)):
+            if low <= 0:
+                raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} log float low must be > 0.")
+            value = math.exp(rng.uniform(math.log(low), math.log(high)))
+        else:
+            value = rng.uniform(low, high)
+        if "step" in spec:
+            step = _coerce_float(spec["step"], f"{base_path}.step")
+            if step <= 0:
+                raise DOEGenerationError(f"model_search.{model_type}.params.{param_name}.step must be > 0.")
+            value = low + round((value - low) / step) * step
+        return max(low, min(high, float(value)))
+    raise DOEGenerationError(
+        f"model_search.{model_type}.params.{param_name}.type={dist_type!r} is unsupported; "
+        "expected categorical, bool, int, or float."
+    )
+
+
+def _expand_random_model_search(
+    model_type: str,
+    search_cfg: dict[str, Any],
+    params_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if "n_trials" not in search_cfg:
+        raise DOEGenerationError(f"model_search.{model_type}.n_trials is required for method=random.")
+    n_trials = _coerce_int(search_cfg["n_trials"], f"model_search.{model_type}.n_trials")
+    if n_trials <= 0:
+        raise DOEGenerationError(f"model_search.{model_type}.n_trials must be > 0.")
+    seed = _coerce_int(search_cfg.get("seed", 0), f"model_search.{model_type}.seed")
+    rng = random.Random(f"{seed}:{model_type}")
+    param_names = sorted(params_cfg.keys())
+    samples: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_attempts = max(n_trials * 20, 20)
+    for _ in range(max_attempts):
+        sample = {
+            _model_search_param_key(model_type, name): _sample_distribution(model_type, name, params_cfg[name], rng)
+            for name in param_names
+        }
+        sample_hash = _stable_hash(sample)
+        if sample_hash in seen:
+            continue
+        seen.add(sample_hash)
+        samples.append(sample)
+        if len(samples) == n_trials:
+            return samples
+    raise DOEGenerationError(
+        f"model_search.{model_type} could not produce {n_trials} unique random samples. "
+        "Reduce n_trials or widen the search space."
+    )
+
+
+def _expand_model_search_for_model(model_type: str, search_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    method = str(search_cfg.get("method", "grid")).strip().lower()
+    if method not in _MODEL_SEARCH_METHODS:
+        raise DOEGenerationError(
+            f"model_search.{model_type}.method={method!r} is unsupported; "
+            f"expected one of {sorted(_MODEL_SEARCH_METHODS)}."
+        )
+    params_cfg = search_cfg.get("params")
+    if not isinstance(params_cfg, dict) or not params_cfg:
+        raise DOEGenerationError(f"model_search.{model_type}.params must be a non-empty mapping.")
+    if method == "grid":
+        return _expand_grid_model_search(model_type, params_cfg)
+    return _expand_random_model_search(model_type, search_cfg, params_cfg)
+
+
+def _normalize_model_search_config(model_search_cfg: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for raw_model_type, search_cfg in model_search_cfg.items():
+        model_type = str(raw_model_type).strip()
+        if not model_type:
+            raise DOEGenerationError("model_search contains an empty model type key.")
+        if model_type in normalized:
+            raise DOEGenerationError(f"model_search contains duplicate model type key {model_type!r}.")
+        normalized[model_type] = search_cfg
+    return normalized
+
+
+def _expand_model_search(
+    expanded: list[dict[str, Any]],
+    defaults_flat: dict[str, Any],
+    model_search_cfg: dict[str, Any],
+    max_cases: int | None,
+    default_model_type: str = "",
+) -> list[dict[str, Any]]:
+    if not model_search_cfg:
+        return expanded
+    if not isinstance(model_search_cfg, dict):
+        raise DOEGenerationError("model_search must be a mapping of model type to search definition.")
+    model_search_cfg = _normalize_model_search_config(model_search_cfg)
+    limit = max_cases if max_cases is not None else _DEFAULT_MAX_EXPANDED_CASES
+    output: list[dict[str, Any]] = []
+    cached_searches: dict[str, list[dict[str, Any]]] = {}
+    matched_model_types: set[str] = set()
+    for factors in expanded:
+        merged = dict(defaults_flat)
+        merged.update(factors)
+        model_type = _model_type_from_flat(merged, default_model_type=default_model_type)
+        search_cfg = model_search_cfg.get(model_type)
+        if search_cfg is None:
+            output.append(factors)
+            continue
+        matched_model_types.add(model_type)
+        if not isinstance(search_cfg, dict):
+            raise DOEGenerationError(f"model_search.{model_type} must be a mapping.")
+        if model_type not in cached_searches:
+            cached_searches[model_type] = _expand_model_search_for_model(model_type, search_cfg)
+        for param_factors in cached_searches[model_type]:
+            conflicts = _dotted_path_conflicts(set(factors), set(param_factors))
+            if conflicts:
+                raise DOEGenerationError(
+                    "model_search must not redefine axes already present in search_space: "
+                    + ", ".join(conflicts)
+                )
+            expanded_factors = dict(factors)
+            expanded_factors.update(param_factors)
+            output.append(expanded_factors)
+            if len(output) > limit:
+                raise DOEGenerationError(
+                    "Expanded DOE is too large after model_search expansion. "
+                    f"Expanded parent cases={len(output):,} exceeds "
+                    f"{'constraints.max_cases' if max_cases is not None else 'default safety limit'}={limit:,}."
+                )
+    unused_model_types = sorted(set(model_search_cfg) - matched_model_types)
+    if unused_model_types:
+        raise DOEGenerationError(
+            "model_search entries did not match any generated train.model.type parent case: "
+            + ", ".join(unused_model_types)
+            + ". Set train.model.type in defaults/search_space or remove unused entries."
+        )
+    return output
 
 
 def _execution_axis_values(axis_key: str, merged: dict[str, Any], declared_axes: set[str], upper_bound: int) -> list[int]:
@@ -1889,6 +2166,13 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
     defaults_cfg = spec.get("defaults", {}) if isinstance(spec.get("defaults"), dict) else {}
     constraints_cfg = spec.get("constraints", {}) if isinstance(spec.get("constraints"), dict) else {}
     selection_cfg = spec.get("selection", {}) if isinstance(spec.get("selection"), dict) else {}
+    raw_model_search_cfg = spec.get("model_search", {})
+    if raw_model_search_cfg is None:
+        model_search_cfg: dict[str, Any] = {}
+    elif isinstance(raw_model_search_cfg, dict):
+        model_search_cfg = raw_model_search_cfg
+    else:
+        raise DOEGenerationError("model_search must be a mapping of model type to search definition.")
 
     output_dir = str(output_cfg.get("dir", "")).strip()
     if not output_dir:
@@ -1904,6 +2188,11 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
     probe = probe_dataset(dataset_cfg)
     resolved_task = _resolve_task_type(dataset_cfg, probe)
     profile = resolve_profile(dataset_cfg, probe)
+    if model_search_cfg and profile.train_node == "train.tdc":
+        raise DOEGenerationError(
+            "model_search currently supports train.model.type parent expansion only; "
+            "train_tdc.model.params search is not supported."
+        )
     if probe.get("source_type") == "local_csv" and probe.get("target_column_present") is False:
         label_cfg = dataset_cfg.get("label", {}) if isinstance(dataset_cfg.get("label"), dict) else {}
         label_map_cfg = dataset_cfg.get("label_map", {}) if isinstance(dataset_cfg.get("label_map"), dict) else {}
@@ -1928,6 +2217,13 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
         max_cases = int(max_cases)
     isolate_case_artifacts = _as_bool(constraints_cfg.get("isolate_case_artifacts", True))
     expanded = _expand_search_space(search_space_flat, max_cases=max_cases)
+    expanded = _expand_model_search(
+        expanded=expanded,
+        defaults_flat=defaults_flat,
+        model_search_cfg=model_search_cfg,
+        max_cases=max_cases,
+        default_model_type=profile.allowed_models[0],
+    )
 
     expanded_case_total = 0
     for factors in expanded:

@@ -14,7 +14,7 @@ Use this skill as a small operating manual for CheMLFlow DOE work. Keep the focu
 1. Locate the DOE spec, usually `config/doe_*.yaml`, `doe/doe_*.yaml`, or a user-provided YAML.
 2. For broad model-selection studies, inspect nearby broad DOE examples before designing a new shape. Prefer examples such as `config/doe_ysi.yaml`, `config/doe_pgp.yaml`, `config/doe_flash.yaml`, or generated `doe_spec.input.yaml` files when present.
 3. Read `docs/doe.md` only if the repo behavior is unfamiliar or the DOE uses a less common profile.
-4. Inspect `dataset`, `defaults`, `search_space`, `constraints`, `selection`, and `output`.
+4. Inspect `dataset`, `defaults`, `search_space`, optional `model_search`, `constraints`, `selection`, and `output`.
 5. Check model/feature/scaler/split compatibility before recommending a run.
 6. If generated artifacts exist, inspect `summary.json`, `manifest.jsonl`, and `parent_manifest.jsonl`.
 7. Report expected run shape: total attempted children, valid children, skipped children, valid scientific parents, and major skip reasons.
@@ -26,6 +26,12 @@ Use this skill as a small operating manual for CheMLFlow DOE work. Keep the focu
 
 - Keep fixed choices in `defaults`; keep only true experiment axes in `search_space`.
 - Treat DOE as parent/child shaped: one scientific parent can expand to many execution children, usually CV folds.
+- Treat `model_search` as an optional parent-level hyperparameter expansion axis. Use it when model-family DOE cases should also compare concrete hyperparameter candidates, such as random forest grids, XGBoost random samples, or DL architecture/training parameters. Do not add `model_search` to every DOE by default.
+- `model_search.<model_type>` applies to matching `train.model.type` parents and emits concrete `train.model.params.*` values before CV child fanout. A 9-point random forest grid under 5-fold CV means 9 scientific RF parents and 45 RF execution children for each matching RF branch.
+- Prefer `model_search` over putting model hyperparameter axes directly in `search_space` when the search is model-scoped. Keep broad study axes such as `pipeline.feature_input`, `preprocess.scaler`, `split.strategy`, and `train.model.type` in `search_space`.
+- `model_search.method: grid` creates the full cartesian product. `model_search.method: random` creates deterministic random samples from Optuna-style distribution definitions at DOE-generation time; it is not Optuna/TPE or adaptive objective search.
+- Keep runtime `train.tuning.*` separate from DOE-level `model_search`. Runtime tuning config controls behavior inside a generated child run; DOE `model_search` creates fixed scientific parent configs that are evaluated across the same child folds.
+- Validate `model_search` auditability: no unused model keys, no duplicate grid values, no conflict with `search_space.train.model.params.*`, no parent/child dotted path collisions, and no `train_tdc.model.params` search unless that support is explicitly added.
 - For CV runs, expect all folds/repeats to be generated unless fold/repeat indices are intentionally fixed for debugging.
 - Treat `split.cv.fold_index`, `split.cv.repeat_index`, `split.inner.fold_index`, and `split.inner.repeat_index` as execution coordinates. Keep them out of `search_space`; omit them for full CV fanout or put them in `defaults` only for targeted debug/retry slices.
 - Prefer separate DOE specs for different split modes or evaluation protocols, such as holdout vs CV vs nested holdout CV. Do not split a single CV model-selection study into separate DOE specs solely because tabular and SMILES-native model families have different valid feature inputs.
@@ -47,7 +53,7 @@ python -c "import rdkit, torch, lightning, chemprop; from chemprop import data, 
 - Record whether the preflight passed, whether execution is CPU-only or GPU/MPS-backed, and whether a generated SMILES-native child has actually completed. Imports prove dependency readiness, not successful CheMLFlow training.
 - If `chemeleon` is in the DOE, set `train.model.foundation_checkpoint` to an existing allowed path and ensure generated CheMeleon configs carry `foundation: chemeleon` when that is the repo's convention.
 - Do not search the user's broader computer for `chemeleon_mp.pt`. Check only the active repo/workspace, paths already in the DOE/config, and user-provided paths. If no checkpoint is found, ask whether to download it from `https://zenodo.org/records/15460715/files/chemeleon_mp.pt`; if not, skip the CheMeleon branch cleanly.
-- For comparison studies, check that Morgan/RDKit/ECFP4+RDKit/scaler/split rows are balanced across non-native models when those branches are in scope.
+- For comparison studies, check that Morgan/RDKit/ECFP4+RDKit/scaler/split rows are balanced across non-native models when those branches are in scope. If `model_search` is used for only some model families, report the resulting parent and child count multipliers so the comparison is auditable.
 - For final claims, prefer CV or nested holdout CV over selecting many configs on one fixed test split.
 - For benchmark/model-selection DOEs that will be consumed by `analysis.py`, set
   `train.reporting.plot_split_performance: true`. Without split metrics, top-level

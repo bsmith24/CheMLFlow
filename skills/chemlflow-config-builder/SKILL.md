@@ -7,7 +7,7 @@ description: Create or review a single CheMLFlow runtime config YAML. Use when C
 
 ## Scope
 
-Use this skill to create or audit one runnable CheMLFlow runtime config for `main.py`. Keep it separate from DOE design: a runtime config is one execution slice; DOE is for generating comparable sets of configs.
+Use this skill to create or audit one runnable CheMLFlow runtime config for `main.py`. Keep it separate from DOE design: a runtime config is one execution slice; DOE is for generating comparable sets of configs. Runtime configs should contain concrete `train.model.params` values, not DOE-only `model_search` blocks.
 
 ## Workflow
 
@@ -51,6 +51,7 @@ python -c "import rdkit, torch, lightning, chemprop; from chemprop import data, 
    - `none` is reasonable for tree models when scaling is not part of the experiment.
    - `minmax` should be deliberate, not accidental.
 10. Validate the config before execution. Check node/block consistency, model/feature compatibility, target column existence, split settings, output paths, and whether analysis artifacts will include the fields the user needs.
+11. If the user wants to search over many model hyperparameter candidates or compare tuning budgets fairly across CV, recommend a DOE with parent-level `model_search` instead of stuffing search definitions into one runtime config. A runtime config may use fixed `train.model.params.*` values from one DOE parent, but it should not contain unresolved DOE search syntax.
 
 ## Scientific Defaults Checkpoint
 
@@ -60,6 +61,7 @@ Before finalizing a molecular config, ask a concise clarification or state the a
 - **Tabular vs SMILES-native**: if a molecular CSV has a SMILES column, explicitly include or exclude Chemprop. Include Chemprop when the source literature used graph/message-passing models or when the goal is "best model from structure." Consider CheMeleon when a checkpoint is available.
 - **Random vs scaffold split**: random splits are useful for quick baselines and interpolation-style prediction; scaffold splits are preferred for chemistry generalization to new molecular families.
 - **Single config vs DOE**: one runtime CV config is one fold slice. Use DOE fanout for a full K-fold estimate.
+- **Fixed params vs DOE model search**: set concrete `train.model.params` in a single runtime config. Use DOE `model_search` only when hyperparameter candidates should become scientific parent cases that then fan out across folds. Keep `train.tuning.*` separate; it is runtime behavior, not the DOE parent-level search axis.
 - **CheMLFlow operating system**: train through CheMLFlow configs, DOE, and analysis unless the user explicitly asks for an external sanity check. Do not silently bypass CheMLFlow with ad hoc sklearn scripts for scientific results.
 
 Useful default language: "I will use Morgan + random split as a quick baseline unless you want RDKit descriptors, ECFP4+RDKit descriptors, Chemprop/CheMeleon, scaffold CV, or all of those represented in a DOE."
