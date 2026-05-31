@@ -5,7 +5,6 @@ import itertools
 import json
 import math
 import os
-import random
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +45,7 @@ _EXECUTION_ONLY_AXES = {
     "split.inner.repeat_index",
 }
 _RUNTIME_TUNING_PREFIXES = ("train.tuning.", "train_tdc.tuning.")
-_MODEL_SEARCH_METHODS = {"grid", "random"}
+_MODEL_SEARCH_METHODS = {"grid", "optuna"}
 _MODEL_PARAM_PREFIX = "train.model.params."
 _LABEL_IC50_REQUIRED_COLUMNS = ("standard_value",)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -882,21 +881,33 @@ def _required_distribution_value(model_type: str, param_name: str, spec: dict[st
     return spec[key]
 
 
-def _sample_distribution(model_type: str, param_name: str, spec: Any, rng: random.Random) -> Any:
+def _import_optuna_for_model_search(model_type: str):
+    try:
+        import optuna
+    except ImportError as exc:
+        raise DOEGenerationError(
+            f"model_search.{model_type}.method=optuna requires the optuna package. "
+            "Install optuna or use method=grid."
+        ) from exc
+    return optuna
+
+
+def _optuna_distribution(model_type: str, param_name: str, spec: Any, optuna: Any) -> Any:
+    distributions = optuna.distributions
     if not isinstance(spec, dict):
         choices = _param_values(spec)
         if not choices:
             raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} must contain at least one choice.")
-        return rng.choice(choices)
+        return distributions.CategoricalDistribution(choices)
 
     dist_type = str(spec.get("type", "categorical" if "choices" in spec else "")).strip().lower()
     if dist_type == "categorical":
         choices = _param_values(_required_distribution_value(model_type, param_name, spec, "choices"))
         if not choices:
             raise DOEGenerationError(f"model_search.{model_type}.params.{param_name}.choices must not be empty.")
-        return rng.choice(choices)
+        return distributions.CategoricalDistribution(choices)
     if dist_type == "bool":
-        return rng.choice([False, True])
+        return distributions.CategoricalDistribution([False, True])
     if dist_type == "int":
         base_path = f"model_search.{model_type}.params.{param_name}"
         low = _coerce_int(_required_distribution_value(model_type, param_name, spec, "low"), f"{base_path}.low")
@@ -909,58 +920,91 @@ def _sample_distribution(model_type: str, param_name: str, spec: Any, rng: rando
         if _as_bool(spec.get("log", False)):
             if low <= 0:
                 raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} log int low must be > 0.")
-            sampled = math.exp(rng.uniform(math.log(low), math.log(high)))
-            value = low + round((sampled - low) / step) * step
-            return max(low, min(high, int(value)))
-        choices = list(range(low, high + 1, step))
-        if not choices:
-            raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} produced no integer choices.")
-        return rng.choice(choices)
+            if step != 1:
+                raise DOEGenerationError(
+                    f"model_search.{model_type}.params.{param_name} cannot combine log=true with step != 1."
+                )
+        return distributions.IntDistribution(low=low, high=high, step=step, log=_as_bool(spec.get("log", False)))
     if dist_type == "float":
         base_path = f"model_search.{model_type}.params.{param_name}"
         low = _coerce_float(_required_distribution_value(model_type, param_name, spec, "low"), f"{base_path}.low")
         high = _coerce_float(_required_distribution_value(model_type, param_name, spec, "high"), f"{base_path}.high")
         if high < low:
             raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} must satisfy low <= high.")
-        if _as_bool(spec.get("log", False)):
+        log = _as_bool(spec.get("log", False))
+        if log:
             if low <= 0:
                 raise DOEGenerationError(f"model_search.{model_type}.params.{param_name} log float low must be > 0.")
-            value = math.exp(rng.uniform(math.log(low), math.log(high)))
-        else:
-            value = rng.uniform(low, high)
+            if "step" in spec:
+                raise DOEGenerationError(
+                    f"model_search.{model_type}.params.{param_name} cannot combine log=true with step."
+                )
+        step = None
         if "step" in spec:
             step = _coerce_float(spec["step"], f"{base_path}.step")
             if step <= 0:
                 raise DOEGenerationError(f"model_search.{model_type}.params.{param_name}.step must be > 0.")
-            value = low + round((value - low) / step) * step
-        return max(low, min(high, float(value)))
+        return distributions.FloatDistribution(low=low, high=high, step=step, log=log)
     raise DOEGenerationError(
         f"model_search.{model_type}.params.{param_name}.type={dist_type!r} is unsupported; "
         "expected categorical, bool, int, or float."
     )
 
 
-def _expand_random_model_search(
+def _optuna_sampler(model_type: str, search_cfg: dict[str, Any], optuna: Any) -> Any:
+    sampler_name = str(search_cfg.get("sampler", "tpe")).strip().lower()
+    seed = _coerce_int(search_cfg.get("seed", 0), f"model_search.{model_type}.seed")
+    if sampler_name in {"tpe", "tpesampler", "tpe_sampler"}:
+        return optuna.samplers.TPESampler(seed=seed)
+    raise DOEGenerationError(
+        f"model_search.{model_type}.sampler={sampler_name!r} is unsupported; "
+        "expected 'tpe'."
+    )
+
+
+def _expand_optuna_model_search(
     model_type: str,
     search_cfg: dict[str, Any],
     params_cfg: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if "n_trials" not in search_cfg:
-        raise DOEGenerationError(f"model_search.{model_type}.n_trials is required for method=random.")
+        raise DOEGenerationError(f"model_search.{model_type}.n_trials is required for method=optuna.")
     n_trials = _coerce_int(search_cfg["n_trials"], f"model_search.{model_type}.n_trials")
     if n_trials <= 0:
         raise DOEGenerationError(f"model_search.{model_type}.n_trials must be > 0.")
-    seed = _coerce_int(search_cfg.get("seed", 0), f"model_search.{model_type}.seed")
-    rng = random.Random(f"{seed}:{model_type}")
+
+    optuna = _import_optuna_for_model_search(model_type)
+    direction = str(search_cfg.get("direction", "maximize")).strip().lower()
+    if direction not in {"maximize", "minimize"}:
+        raise DOEGenerationError(
+            f"model_search.{model_type}.direction={direction!r} is unsupported; "
+            "expected 'maximize' or 'minimize'."
+        )
+    try:
+        sampler = _optuna_sampler(model_type, search_cfg, optuna)
+        study = optuna.create_study(direction=direction, sampler=sampler)
+    except Exception as exc:
+        raise DOEGenerationError(f"model_search.{model_type} failed to create an Optuna study: {exc}") from exc
+
     param_names = sorted(params_cfg.keys())
+    try:
+        fixed_distributions = {
+            _model_search_param_key(model_type, name): _optuna_distribution(model_type, name, params_cfg[name], optuna)
+            for name in param_names
+        }
+    except DOEGenerationError:
+        raise
+    except Exception as exc:
+        raise DOEGenerationError(f"model_search.{model_type} has an invalid Optuna distribution: {exc}") from exc
     samples: list[dict[str, Any]] = []
     seen: set[str] = set()
     max_attempts = max(n_trials * 20, 20)
     for _ in range(max_attempts):
-        sample = {
-            _model_search_param_key(model_type, name): _sample_distribution(model_type, name, params_cfg[name], rng)
-            for name in param_names
-        }
+        try:
+            trial = study.ask(fixed_distributions=fixed_distributions)
+        except Exception as exc:
+            raise DOEGenerationError(f"model_search.{model_type} failed to ask Optuna for a trial: {exc}") from exc
+        sample = {key: trial.params[key] for key in fixed_distributions}
         sample_hash = _stable_hash(sample)
         if sample_hash in seen:
             continue
@@ -969,7 +1013,7 @@ def _expand_random_model_search(
         if len(samples) == n_trials:
             return samples
     raise DOEGenerationError(
-        f"model_search.{model_type} could not produce {n_trials} unique random samples. "
+        f"model_search.{model_type} could not produce {n_trials} unique Optuna parent trials. "
         "Reduce n_trials or widen the search space."
     )
 
@@ -986,7 +1030,7 @@ def _expand_model_search_for_model(model_type: str, search_cfg: dict[str, Any]) 
         raise DOEGenerationError(f"model_search.{model_type}.params must be a non-empty mapping.")
     if method == "grid":
         return _expand_grid_model_search(model_type, params_cfg)
-    return _expand_random_model_search(model_type, search_cfg, params_cfg)
+    return _expand_optuna_model_search(model_type, search_cfg, params_cfg)
 
 
 def _normalize_model_search_config(model_search_cfg: dict[str, Any]) -> dict[str, Any]:

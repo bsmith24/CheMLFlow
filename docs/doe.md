@@ -158,9 +158,9 @@ definitions.
 
 ```yaml
 search_space:
-  train.model.type: [random_forest, xgboost, dl_simple]
+  train.model.type: [random_forest, dl_simple, chemprop]
   split.strategy: [random, scaffold]
-  pipeline.feature_input: [featurize.rdkit, featurize.morgan]
+  pipeline.feature_input: [featurize.rdkit, smiles_native]
 
 model_search:
   random_forest:
@@ -169,22 +169,27 @@ model_search:
       n_estimators: [100, 300, 500]
       max_depth: [10, 20, null]
 
-  xgboost:
-    method: random
-    n_trials: 40
-    seed: 42
-    params:
-      n_estimators: {type: int, low: 100, high: 800, step: 100}
-      learning_rate: {type: float, low: 0.01, high: 0.2, log: true}
-
   dl_simple:
-    method: random
+    method: optuna
     n_trials: 25
     seed: 42
     params:
       hidden_dim: {type: categorical, choices: [64, 128, 256]}
       dropout: {type: float, low: 0.0, high: 0.5}
+      learning_rate: {type: float, low: 0.01, high: 0.2, log: true}
       batch_size: {type: categorical, choices: [32, 64, 128]}
+
+  chemprop:
+    method: optuna
+    n_trials: 12
+    seed: 42
+    params:
+      max_epochs: {type: categorical, choices: [20, 40]}
+      batch_size: {type: categorical, choices: [32, 64]}
+      max_lr: {type: float, low: 0.0005, high: 0.003, log: true}
+      mp_hidden_dim: {type: categorical, choices: [128, 300]}
+      ffn_hidden_dim: {type: categorical, choices: [128, 300]}
+      mp_depth: {type: categorical, choices: [2, 3]}
 ```
 
 `model_search.<model_type>` applies only to matching `train.model.type` cases,
@@ -193,10 +198,18 @@ Unmatched `model_search` keys are rejected so typos cannot silently drop a
 hyperparameter search. `model_search` currently targets the standard
 `train.model.params` path; `train_tdc.model.params` search is not supported.
 
-`method: grid` creates the full cartesian product. `method: random` samples
-concrete parent candidates from Optuna-style distribution definitions at
-DOE-generation time; it is deterministic random sampling, not Optuna/TPE or an
-adaptive objective search. Runtime child-level tuning routes such as
+`method: grid` creates the full cartesian product. `method: optuna` converts the
+YAML distribution specs into Optuna distributions and asks an Optuna study for
+`n_trials` concrete parent candidates at DOE-generation time; each sampled point
+becomes a fixed scientific parent before CV fold/repeat fanout. In 5-fold CV,
+`n_trials: 12` creates 12 scientific parents and 60 execution children for that
+matching model branch. The `optuna` Python package is required for this method.
+
+This is parent-level batch trial generation. A static `generate_doe.py` call
+does not adapt later trials from completed CV metrics; implementing metric-
+adaptive Optuna requires an execution loop that runs each parent, aggregates its
+CV metric, and reports the result back to Optuna. Runtime child-level tuning
+routes such as
 `train.tuning.method: train_cv`, time-series `train.tuning.method: optuna`, and
 `train.tuning.use_hpo: true` are disabled; generated children should run fixed
 concrete `train.model.params`.

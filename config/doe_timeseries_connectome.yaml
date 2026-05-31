@@ -47,7 +47,7 @@ defaults:
   train.model.params.device: cuda
 
 # Scientific factors only. Model-specific hyperparameters are below in
-# model_search so every sampled point becomes a DOE parent case.
+# model_search so every Optuna trial becomes a DOE parent case.
 search_space:
   train.model.params.connectome_mode: [connectome, connectome_randomized]
   train.model.params.connectome_selection_mode: [top_degree, random]
@@ -56,7 +56,7 @@ search_space:
 
 model_search:
   dl_connectome_nvar:
-    method: random
+    method: optuna
     n_trials: 50
     seed: 2025
     params:

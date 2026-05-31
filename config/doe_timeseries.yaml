@@ -59,7 +59,7 @@ search_space:
 
 model_search:
   dl_adaptive_nvar:
-    method: random
+    method: optuna
     n_trials: 80
     seed: 2025
     params:

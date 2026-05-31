@@ -467,9 +467,11 @@ Set `pipeline.feature_input: smiles_native` for Chemprop/CheMeleon runs.
 | `use_hpo` | `false` | Must remain `false`; child-level Optuna HPO is disabled. |
 | `hpo_trials` | `30` | Legacy field; ignored because child-level Optuna HPO is disabled. |
 
-Use DOE `model_search` when hyperparameter candidates should be compared. DOE
-generation writes concrete `train.model.params` into each parent case before CV
-fold/repeat child fanout.
+Use DOE `model_search` when hyperparameter candidates should be compared. Use
+`model_search.method: grid` for fixed cartesian grids and
+`model_search.method: optuna` for Optuna-generated parent trials. DOE generation
+writes concrete `train.model.params` into each parent case before CV fold/repeat
+child fanout.
 
 ### `train.reporting`
 

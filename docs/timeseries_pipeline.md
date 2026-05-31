@@ -93,10 +93,10 @@ train:
 Two DOE specs ship with this branch:
 
 ```bash
-# AdaptiveNVAR sweep (mirrors notebook 2's Optuna grid)
+# AdaptiveNVAR sweep (parent-level Optuna model_search)
 python scripts/generate_doe.py --doe config/doe_timeseries.yaml
 
-# ConnectomeNVAR sweep (mirrors notebook 1's Optuna grid + connectome_mode axis)
+# ConnectomeNVAR sweep (parent-level Optuna model_search + connectome axes)
 python scripts/generate_doe.py --doe config/doe_timeseries_connectome.yaml
 ```
 
@@ -151,8 +151,9 @@ train:
 
 Runtime `tuning.method: optuna` is disabled. To compare searched axes such as
 k, hidden_dim, lr_adam, lr_lbfgs, n_connectome, input_scaling, or weight_decay,
-define them under DOE `model_search`. DOE generation writes each sampled point
-as concrete `train.model.params` before child execution fanout.
+define them under DOE `model_search.method: optuna`. DOE generation writes each
+Optuna parent trial as concrete `train.model.params` before child execution
+fanout.
 
 The full parameter list is documented in
 `MLModels/training/timeseries_nvar.py::TrainingConfig`.

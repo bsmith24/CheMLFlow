@@ -107,7 +107,7 @@ meaning) — happy to add it under a different knob.
 
 Historical note, now superseded. v3 introduced an in-loop time-series Optuna
 path, but current CheMLFlow disables runtime child-level hyperparameter search.
-Use DOE `model_search` so each sampled hyperparameter candidate is a fixed
+Use DOE `model_search` so each Optuna parent trial is a fixed
 scientific parent case before execution child fanout.
 
 ### Added
