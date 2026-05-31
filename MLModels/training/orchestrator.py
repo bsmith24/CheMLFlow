@@ -246,7 +246,7 @@ def train_model(
     if isinstance(model, dl_search_config_cls):
         if X_val is None or y_val is None or len(y_val) == 0:
             raise ValueError(
-                "DL models require a validation split for early stopping/HPO. "
+                "DL models require a validation split for early stopping. "
                 "Ensure the pipeline includes the split node and set split.val_size > 0."
             )
         effective_params = {**model.default_params, **model_params}

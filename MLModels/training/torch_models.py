@@ -1,19 +1,10 @@
 from __future__ import annotations
 
-import gc
-import inspect
 import logging
 import random
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
-from sklearn.metrics import r2_score
-
-from .metrics import (
-    safe_auc,
-    validate_classification_metric_inputs,
-    validate_regression_metric_inputs,
-)
 
 
 def get_device():
@@ -39,27 +30,6 @@ def seed_dl_runtime(seed: int) -> None:
             torch.use_deterministic_algorithms(True, warn_only=True)
         except TypeError:
             torch.use_deterministic_algorithms(True)
-
-
-def _call_predict_fn(
-    predict_fn: Callable[..., np.ndarray],
-    model: object,
-    X: np.ndarray,
-    *,
-    batch_size: int,
-) -> np.ndarray:
-    try:
-        signature = inspect.signature(predict_fn)
-    except (TypeError, ValueError):
-        return predict_fn(model, X, batch_size=batch_size)
-
-    parameters = signature.parameters.values()
-    supports_batch_size = "batch_size" in signature.parameters or any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters
-    )
-    if supports_batch_size:
-        return predict_fn(model, X, batch_size=batch_size)
-    return predict_fn(model, X)
 
 
 def train_dl(
@@ -181,137 +151,3 @@ def predict_dl(model, X: np.ndarray, batch_size: int = 64) -> np.ndarray:
     if not preds:
         return np.array([], dtype=float)
     return np.concatenate(preds)
-
-
-def run_optuna(
-    config: Any,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_val: np.ndarray,
-    y_val: np.ndarray,
-    max_evals: int,
-    random_state: int,
-    patience: int,
-    task_type: str = "regression",
-    *,
-    seed_fn: Callable[[int], None] | None = None,
-    train_fn: Callable[..., dict[str, Any]] | None = None,
-    predict_fn: Callable[..., np.ndarray] | None = None,
-) -> tuple[object, dict[str, Any]]:
-    try:
-        import optuna
-    except Exception as exc:
-        raise ImportError("optuna is required for DL hyperparameter search.") from exc
-
-    if X_val is None or y_val is None or len(y_val) == 0:
-        raise ValueError("DL hyperparameter search requires an explicit validation split (X_val/y_val).")
-
-    seed_fn = seed_fn or seed_dl_runtime
-    train_fn = train_fn or train_dl
-    predict_fn = predict_fn or predict_dl
-
-    best_model = None
-    best_score = float("-inf")
-    pruned_reasons: list[str] = []
-
-    def objective(trial: optuna.Trial) -> float:
-        nonlocal best_model, best_score
-
-        params = {}
-        for name, spec in config.search_space.items():
-            if spec["type"] == "categorical":
-                params[name] = trial.suggest_categorical(name, spec["choices"])
-            elif spec["type"] == "float":
-                params[name] = trial.suggest_float(
-                    name, spec["low"], spec["high"], log=spec.get("log", False)
-                )
-            elif spec["type"] == "int":
-                params[name] = trial.suggest_int(
-                    name, spec["low"], spec["high"], log=spec.get("log", False)
-                )
-
-        trial_seed = int(random_state) + int(trial.number) + 1
-        seed_fn(trial_seed)
-        model = config.model_class(params)
-
-        result = train_fn(
-            model=model,
-            X_train=X_train,
-            y_train=y_train,
-            X_val=X_val,
-            y_val=y_val,
-            epochs=int(params.get("epochs", 100)),
-            batch_size=int(params.get("batch_size", 32)),
-            learning_rate=float(params.get("learning_rate", 1e-3)),
-            patience=patience,
-            random_state=trial_seed,
-            task_type=task_type,
-        )
-
-        trained_model = result["model"]
-        y_pred = _call_predict_fn(
-            predict_fn,
-            trained_model,
-            X_val,
-            batch_size=max(1, int(params.get("batch_size", 32))),
-        )
-
-        if task_type == "classification":
-            try:
-                y_true, y_score = validate_classification_metric_inputs(
-                    y_val,
-                    np.asarray(y_pred).reshape(-1),
-                    context="optuna validation scoring",
-                )
-            except ValueError as exc:
-                pruned_reasons.append(str(exc))
-                raise optuna.exceptions.TrialPruned(str(exc)) from exc
-            y_proba = 1.0 / (1.0 + np.exp(-y_score))
-            score = safe_auc(y_true, y_proba)
-            if score is None:
-                message = "AUC undefined (single-class val set)"
-                pruned_reasons.append(message)
-                raise optuna.exceptions.TrialPruned(message)
-        else:
-            try:
-                y_true, y_hat = validate_regression_metric_inputs(
-                    y_val,
-                    y_pred,
-                    context="optuna validation scoring",
-                )
-            except ValueError as exc:
-                pruned_reasons.append(str(exc))
-                raise optuna.exceptions.TrialPruned(str(exc)) from exc
-            score = float(r2_score(y_true, y_hat))
-
-        if score > best_score:
-            best_score = score
-            best_model = trained_model
-            logging.info("New best score=%.4f with params: %s", score, params)
-
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-        del model, result, y_pred
-        gc.collect()
-
-        return score
-
-    sampler = optuna.samplers.TPESampler(seed=random_state)
-    study = optuna.create_study(direction="maximize", sampler=sampler)
-    study.optimize(objective, n_trials=max_evals, show_progress_bar=True)
-
-    if best_model is None:
-        detail = pruned_reasons[-1] if pruned_reasons else "no completed trials"
-        raise ValueError(
-            "DL hyperparameter search completed no valid trials; "
-            f"last prune reason: {detail}"
-        )
-
-    best_params = study.best_params
-    logging.info("Optuna complete. Best score=%.4f, params=%s", best_score, best_params)
-    return best_model, best_params

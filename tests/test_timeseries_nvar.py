@@ -185,7 +185,7 @@ def test_train_timeseries_rejects_child_level_optuna(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# v6 additions: GPU strictness, all-categorical Optuna, repeated-final UX
+# v6 additions: GPU strictness, all-categorical parent search, repeated-final UX
 # ---------------------------------------------------------------------------
 
 

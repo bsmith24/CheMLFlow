@@ -20,7 +20,7 @@ This package contains modular training utilities used by `MLModels/train_models.
 - `persistence.py`
   - Model/metrics/params persistence helpers (`joblib`, JSON, torch state dict).
 - `torch_models.py`
-  - PyTorch DL helpers for device selection, deterministic seeding, training, prediction, and legacy private Optuna helpers.
+  - PyTorch DL helpers for device selection, deterministic seeding, training, and prediction.
 - `sklearn_models.py`
   - Tabular model constructors and hyperparameter-search wrappers (RF/SVM/DT/XGBoost/ensemble).
 - `dl_registry.py`

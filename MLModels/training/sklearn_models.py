@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 from sklearn.ensemble import (
     RandomForestClassifier,
     RandomForestRegressor,
     VotingClassifier,
     VotingRegressor,
 )
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from xgboost import XGBClassifier, XGBRegressor
@@ -45,169 +43,47 @@ def build_tabular_model(
             f"Unsupported model.tuning.method={tuning_method!r}. "
             + _PARENT_LEVEL_MODEL_SEARCH_MESSAGE
         )
+    _ = (cv_folds, search_iters)
 
     if model_type == "random_forest":
-        param_dist = {
-            "n_estimators": [int(x) for x in np.linspace(start=100, stop=1000, num=10)],
-            "max_depth": [int(x) for x in np.linspace(10, 110, num=11)] + [None],
-            "min_samples_split": [2, 5, 10],
-            "min_samples_leaf": [1, 2, 4],
-            "max_features": ["sqrt", "log2", None],
-            "bootstrap": [True, False],
-        }
         if is_classification:
-            if tuning_method == "fixed":
-                params = {"random_state": random_state, **model_params}
-                params.setdefault("n_jobs", n_jobs)
-                return RandomForestClassifier(**params)
-            base_rf_cls = RandomForestClassifier(random_state=random_state)
-            return RandomizedSearchCV(
-                estimator=base_rf_cls,
-                param_distributions=param_dist,
-                n_iter=search_iters,
-                cv=cv_folds,
-                scoring="accuracy",
-                n_jobs=n_jobs,
-                random_state=random_state,
-            )
-        if tuning_method == "fixed":
             params = {"random_state": random_state, **model_params}
             params.setdefault("n_jobs", n_jobs)
-            return RandomForestRegressor(**params)
-        base_rf = RandomForestRegressor(random_state=random_state)
-        return RandomizedSearchCV(
-            estimator=base_rf,
-            param_distributions=param_dist,
-            n_iter=search_iters,
-            cv=cv_folds,
-            scoring="r2",
-            n_jobs=n_jobs,
-            random_state=random_state,
-        )
+            return RandomForestClassifier(**params)
+        params = {"random_state": random_state, **model_params}
+        params.setdefault("n_jobs", n_jobs)
+        return RandomForestRegressor(**params)
 
     if model_type == "svm":
         if is_classification:
-            param_grid_svc = {
-                "C": [0.1, 1, 10, 100],
-                "gamma": ["scale", "auto", 0.1, 0.01],
-            }
-            if tuning_method == "fixed":
-                params = {"probability": True, **model_params}
-                return SVC(**params)
-            return GridSearchCV(
-                estimator=SVC(kernel="rbf", probability=True),
-                param_grid=param_grid_svc,
-                cv=cv_folds,
-                scoring="accuracy",
-                n_jobs=n_jobs,
-            )
-        param_grid_svm = {
-            "C": [0.1, 1, 10, 100],
-            "gamma": ["scale", "auto", 0.1, 0.01],
-            "epsilon": [0.1, 0.2, 0.5],
-        }
-        if tuning_method == "fixed":
-            return SVR(**model_params)
-        return GridSearchCV(
-            estimator=SVR(kernel="rbf"),
-            param_grid=param_grid_svm,
-            cv=cv_folds,
-            scoring="r2",
-            n_jobs=n_jobs,
-        )
+            params = {"probability": True, **model_params}
+            return SVC(**params)
+        return SVR(**model_params)
 
     if model_type == "decision_tree":
-        param_dist_dt = {
-            "max_depth": [int(x) for x in np.linspace(5, 50, num=10)] + [None],
-            "min_samples_split": [2, 5, 10, 20],
-            "min_samples_leaf": [1, 2, 4, 8],
-            "max_features": ["sqrt", "log2", None],
-        }
         if is_classification:
-            if tuning_method == "fixed":
-                params = {"random_state": random_state, **model_params}
-                return DecisionTreeClassifier(**params)
-            base_dt_cls = DecisionTreeClassifier(random_state=random_state)
-            return RandomizedSearchCV(
-                estimator=base_dt_cls,
-                param_distributions=param_dist_dt,
-                n_iter=search_iters,
-                cv=cv_folds,
-                scoring="accuracy",
-                n_jobs=n_jobs,
-                random_state=random_state,
-            )
-        if tuning_method == "fixed":
             params = {"random_state": random_state, **model_params}
-            return DecisionTreeRegressor(**params)
-        base_dt = DecisionTreeRegressor(random_state=random_state)
-        return RandomizedSearchCV(
-            estimator=base_dt,
-            param_distributions=param_dist_dt,
-            n_iter=search_iters,
-            cv=cv_folds,
-            scoring="r2",
-            n_jobs=n_jobs,
-            random_state=random_state,
-        )
+            return DecisionTreeClassifier(**params)
+        params = {"random_state": random_state, **model_params}
+        return DecisionTreeRegressor(**params)
 
     if model_type == "xgboost":
-        param_dist_xgb = {
-            "n_estimators": [100, 200, 300, 500],
-            "max_depth": [3, 5, 7, 9],
-            "learning_rate": [0.01, 0.05, 0.1, 0.2],
-            "subsample": [0.6, 0.8, 1.0],
-            "colsample_bytree": [0.6, 0.8, 1.0],
-            "reg_alpha": [0, 0.01, 0.1, 1],
-            "reg_lambda": [0.1, 1, 10, 100],
-        }
         if is_classification:
-            if tuning_method == "fixed":
-                params = {
-                    "objective": "binary:logistic",
-                    "eval_metric": "logloss",
-                    "random_state": random_state,
-                    "n_jobs": n_jobs,
-                    **model_params,
-                }
-                return XGBClassifier(**params)
-            base_xgb_cls = XGBClassifier(
-                objective="binary:logistic",
-                eval_metric="logloss",
-                random_state=random_state,
-                n_jobs=n_jobs,
-            )
-            return RandomizedSearchCV(
-                estimator=base_xgb_cls,
-                param_distributions=param_dist_xgb,
-                n_iter=search_iters,
-                cv=cv_folds,
-                scoring="accuracy",
-                n_jobs=n_jobs,
-                random_state=random_state,
-            )
-        if tuning_method == "fixed":
             params = {
-                "objective": "reg:squarederror",
+                "objective": "binary:logistic",
+                "eval_metric": "logloss",
                 "random_state": random_state,
                 "n_jobs": n_jobs,
                 **model_params,
             }
-            return XGBRegressor(**params)
-        base_xgb = XGBRegressor(
-            objective="reg:squarederror",
-            random_state=random_state,
-            n_jobs=n_jobs,
-        )
-        return RandomizedSearchCV(
-            estimator=base_xgb,
-            param_distributions=param_dist_xgb,
-            n_iter=search_iters,
-            cv=cv_folds,
-            scoring="r2",
-            n_jobs=n_jobs,
-            random_state=random_state,
-        )
+            return XGBClassifier(**params)
+        params = {
+            "objective": "reg:squarederror",
+            "random_state": random_state,
+            "n_jobs": n_jobs,
+            **model_params,
+        }
+        return XGBRegressor(**params)
 
     if model_type == "ensemble":
         ensemble_cfg = model_params if isinstance(model_params, dict) else {}

@@ -36,7 +36,6 @@ defaults:
   train.model.params.weight_decay: 0.0
   train.model.params.num_windows: 10
   train.model.params.horizons: [25, 50, 75, 100]
-  train.model.params.optuna_num_runs: 5      # notebook uses num_runs=5 inside Optuna validation
   train.model.params.test_num_runs: 25       # final independent test trainings; report mean ± std
   train.model.params.adam_patience: 200
   train.model.params.lbfgs_patience: 200

@@ -462,10 +462,10 @@ Set `pipeline.feature_input: smiles_native` for Chemprop/CheMeleon runs.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `method` | `fixed` | Only supported runtime method. Use concrete `train.model.params`. |
-| `cv_folds` | `5` | Legacy field; ignored unless a removed child-level tuning path is restored. |
-| `search_iters` | `100` | Legacy field; ignored unless a removed child-level tuning path is restored. |
+| `cv_folds` | `5` | Legacy field; runtime child-level search code has been removed. |
+| `search_iters` | `100` | Legacy field; runtime child-level search code has been removed. |
 | `use_hpo` | `false` | Must remain `false`; child-level Optuna HPO is disabled. |
-| `hpo_trials` | `30` | Legacy field; ignored because child-level Optuna HPO is disabled. |
+| `hpo_trials` | `30` | Legacy field; runtime child-level Optuna code has been removed. |
 
 Use DOE `model_search` when hyperparameter candidates should be compared. Use
 `model_search.method: grid` for fixed cartesian grids and
@@ -517,10 +517,10 @@ train_tdc:
 | `path` | (from global) | Directory for TDC data downloads. |
 | `model.type` | — | Model type (required). Must be `catboost_classifier`. |
 | `tuning.method` | `fixed` | Only supported runtime method. |
-| `tuning.cv_folds` | `5` | Legacy field; runtime child-level search is disabled. |
-| `tuning.search_iters` | `100` | Legacy field; runtime child-level search is disabled. |
+| `tuning.cv_folds` | `5` | Legacy field; runtime child-level search code has been removed. |
+| `tuning.search_iters` | `100` | Legacy field; runtime child-level search code has been removed. |
 | `tuning.use_hpo` | `false` | Must remain `false`; child-level HPO is disabled. |
-| `tuning.hpo_trials` | `30` | Legacy field; child-level HPO is disabled. |
+| `tuning.hpo_trials` | `30` | Legacy field; runtime child-level HPO code has been removed. |
 | `early_stopping.patience` | `20` | Early stopping patience. |
 | `featurize.radius` | `2` | Morgan fingerprint radius. |
 | `featurize.n_bits` | `2048` | Morgan fingerprint bit count. |

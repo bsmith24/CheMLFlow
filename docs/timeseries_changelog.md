@@ -5,7 +5,7 @@ integration. Earlier baseline behavior of CheMLFlow is unchanged.
 
 > Current note: runtime child-level `train.tuning.method: optuna` is now
 > disabled. Use DOE `model_search` to create parent-level fixed time-series
-> hyperparameter cases; the v3 Optuna notes below are historical context.
+> hyperparameter cases; the old in-loop Optuna implementation has been removed.
 
 ## v6 — 2026-05-15
 
@@ -37,8 +37,8 @@ continuous `lr_adam` axis that diverged from the notebook protocol.
   from the first 10 lines of the log instead of being a 35-minute mystery.
 
 - **Repeated-final UX (the "25 test runs" confusion).** The v3 patch already
-  retrains 25 times after Optuna picks hyperparameters, but the user
-  experience made it hard to tell what was happening:
+  retrained 25 times after the searched hyperparameter point was selected, but
+  the user experience made it hard to tell what was happening:
     - Each iteration logged the same `"Training on device: cpu"` line as
       Optuna trials, with no visible boundary between "we're still searching"
       and "we're now doing final test-runs".
@@ -62,7 +62,7 @@ continuous `lr_adam` axis that diverged from the notebook protocol.
       is killed at run 7 of 25, the metrics.json still has a meaningful
       mean±std over the completed 7 runs and clearly marks itself partial.
 
-- **Optuna search space for `dl_adaptive_nvar` is now notebook-faithful.**
+- **Parent-level search space for `dl_adaptive_nvar` is now notebook-faithful.**
   `lr_adam` was a continuous log-uniform float `(1e-4, 1e-2)`. The notebook
   uses `suggest_categorical("lr_adam", [1e-4, 1e-3, 1e-2])`. v6 matches.
   `dl_connectome_nvar` was already all-categorical; verified to match
@@ -73,7 +73,7 @@ continuous `lr_adam` axis that diverged from the notebook protocol.
 
 - `MLModels.training.timeseries_nvar._resolve_device(...)` and
   `_log_device_diagnostics(...)`. Single shared device-selection path
-  used by both Optuna trials and final test-runs.
+  used by final fixed-param test-runs.
 - `TrainingConfig.device: str = "auto"`.
 - New tests:
     - `test_device_strict_cuda_raises_when_unavailable`
@@ -106,9 +106,9 @@ meaning) — happy to add it under a different knob.
 ## v3 — 2026-05-13
 
 Historical note, now superseded. v3 introduced an in-loop time-series Optuna
-path, but current CheMLFlow disables runtime child-level hyperparameter search.
-Use DOE `model_search` so each Optuna parent trial is a fixed
-scientific parent case before execution child fanout.
+path, but current CheMLFlow disables runtime child-level hyperparameter search
+and removes the private in-loop helper. Use DOE `model_search` so each Optuna
+parent trial is a fixed scientific parent case before execution child fanout.
 
 ### Added
 
@@ -119,8 +119,8 @@ scientific parent case before execution child fanout.
   `hidden_dim`, Connectome NVAR has `n_connectome` and `input_scaling`,
   etc. The search-space spec format (`{"type": "categorical|float|int", ...}`)
   is identical to the tabular DL path, so it reads the same way.
-- `MLModels.training.timeseries_nvar._run_optuna_timeseries(...)` was added in
-  v3 as a private implementation path. It is now disabled for runtime use.
+- The private in-loop time-series Optuna helper added in v3 has now been
+  removed.
 - The YAML/runtime tuning controls added in v3 are superseded by DOE
   `model_search`. Runtime time-series configs should keep
   `train.tuning.method: fixed`.
