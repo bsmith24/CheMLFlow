@@ -108,6 +108,12 @@ def _frame_splits_from_indices(
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
+    if args.use_hpo:
+        raise ValueError(
+            "Runtime child-level HPO via --use-hpo is disabled. "
+            "Use DOE model_search to create parent-level fixed hyperparameter cases."
+        )
+
     df = pd.read_csv(args.data_path)
     target_col = _resolve_target_column(df, args.target_column)
     y = df[target_col]
@@ -283,7 +289,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--random-state", type=int, default=42)
     train_parser.add_argument("--cv-folds", type=int, default=5)
     train_parser.add_argument("--search-iters", type=int, default=100)
-    train_parser.add_argument("--use-hpo", action="store_true", help="Enable HPO for DL models.")
+    train_parser.add_argument(
+        "--use-hpo",
+        action="store_true",
+        help="Disabled child-level HPO flag; use DOE model_search instead.",
+    )
     train_parser.add_argument("--hpo-trials", type=int, default=30)
     train_parser.add_argument("--patience", type=int, default=20)
     train_parser.add_argument("--test-size", type=float, default=0.2)

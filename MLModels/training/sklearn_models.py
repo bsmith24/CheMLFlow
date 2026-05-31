@@ -15,6 +15,10 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from xgboost import XGBClassifier, XGBRegressor
 
 _TABULAR_MODEL_TYPES = {"random_forest", "svm", "decision_tree", "xgboost", "ensemble"}
+_PARENT_LEVEL_MODEL_SEARCH_MESSAGE = (
+    "Runtime child-level hyperparameter search is disabled. Use DOE model_search "
+    "to create parent-level fixed hyperparameter cases that fan out across CV folds."
+)
 
 
 def is_tabular_model(model_type: str) -> bool:
@@ -36,6 +40,11 @@ def build_tabular_model(
     tuning_method = str(tuning_method or "fixed").strip().lower()
     is_classification = str(task_type or "").strip().lower() == "classification"
     model_params = model_params or {}
+    if tuning_method != "fixed":
+        raise ValueError(
+            f"Unsupported model.tuning.method={tuning_method!r}. "
+            + _PARENT_LEVEL_MODEL_SEARCH_MESSAGE
+        )
 
     if model_type == "random_forest":
         param_dist = {

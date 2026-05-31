@@ -397,7 +397,7 @@ train:
 | Block | Required | Description |
 |-------|----------|-------------|
 | `train.model` | Yes | Model type and hyperparameters. |
-| `train.tuning` | No | Hyperparameter search settings. |
+| `train.tuning` | No | Runtime tuning settings. Runtime hyperparameter search is disabled; use DOE `model_search` for HPO. |
 | `train.reporting` | No | Output/plotting options. |
 | `train.early_stopping` | No | Early stopping for DL models. |
 | `train.features` | No | Feature selection/exclusion. |
@@ -427,7 +427,7 @@ train:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `train.model.params` | `{}` | Model-specific hyperparameters passed to fixed and `train_cv` training paths. |
+| `train.model.params` | `{}` | Concrete model-specific hyperparameters passed to the fixed training path. |
 | `train.model.n_jobs` | `-1` | Parallelism for sklearn/joblib. Use `1` to disable parallelism. |
 
 **Chemprop / CheMeleon-specific keys:**
@@ -461,11 +461,15 @@ Set `pipeline.feature_input: smiles_native` for Chemprop/CheMeleon runs.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `method` | `fixed` | Tuning method: `fixed` (use provided params) or `train_cv` (sklearn RandomizedSearchCV). |
-| `cv_folds` | `5` | Number of CV folds for `train_cv` method. |
-| `search_iters` | `100` | Number of random search iterations for `train_cv`. |
-| `use_hpo` | `false` | Enable Optuna hyperparameter optimization (DL models only). |
-| `hpo_trials` | `30` | Number of Optuna trials when `use_hpo: true`. |
+| `method` | `fixed` | Only supported runtime method. Use concrete `train.model.params`. |
+| `cv_folds` | `5` | Legacy field; ignored unless a removed child-level tuning path is restored. |
+| `search_iters` | `100` | Legacy field; ignored unless a removed child-level tuning path is restored. |
+| `use_hpo` | `false` | Must remain `false`; child-level Optuna HPO is disabled. |
+| `hpo_trials` | `30` | Legacy field; ignored because child-level Optuna HPO is disabled. |
+
+Use DOE `model_search` when hyperparameter candidates should be compared. DOE
+generation writes concrete `train.model.params` into each parent case before CV
+fold/repeat child fanout.
 
 ### `train.reporting`
 
@@ -510,10 +514,11 @@ train_tdc:
 | `seeds` | `[1,2,3,4,5]` | Random seeds for multi-seed evaluation. |
 | `path` | (from global) | Directory for TDC data downloads. |
 | `model.type` | — | Model type (required). Must be `catboost_classifier`. |
-| `tuning.cv_folds` | `5` | CV folds for hyperparameter search. |
-| `tuning.search_iters` | `100` | Random search iterations. |
-| `tuning.use_hpo` | `false` | Enable Optuna HPO. |
-| `tuning.hpo_trials` | `30` | Optuna trials if enabled. |
+| `tuning.method` | `fixed` | Only supported runtime method. |
+| `tuning.cv_folds` | `5` | Legacy field; runtime child-level search is disabled. |
+| `tuning.search_iters` | `100` | Legacy field; runtime child-level search is disabled. |
+| `tuning.use_hpo` | `false` | Must remain `false`; child-level HPO is disabled. |
+| `tuning.hpo_trials` | `30` | Legacy field; child-level HPO is disabled. |
 | `early_stopping.patience` | `20` | Early stopping patience. |
 | `featurize.radius` | `2` | Morgan fingerprint radius. |
 | `featurize.n_bits` | `2048` | Morgan fingerprint bit count. |

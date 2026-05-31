@@ -196,16 +196,17 @@ hyperparameter search. `model_search` currently targets the standard
 `method: grid` creates the full cartesian product. `method: random` samples
 concrete parent candidates from Optuna-style distribution definitions at
 DOE-generation time; it is deterministic random sampling, not Optuna/TPE or an
-adaptive objective search. Existing runtime tuning settings such as
-`train.tuning.method: train_cv` and `train.tuning.use_hpo` remain separate
-training-time behavior.
+adaptive objective search. Runtime child-level tuning routes such as
+`train.tuning.method: train_cv`, time-series `train.tuning.method: optuna`, and
+`train.tuning.use_hpo: true` are disabled; generated children should run fixed
+concrete `train.model.params`.
 
 ## Generated Artifacts
 
 DOE generation writes these files into `output.dir`:
 
-- `summary.json`: counts, profile/task, selection metadata, DOE spec hash,
-  snapshot path, and git provenance
+- `summary.json`: deterministic counts, profile/task, selection metadata, DOE
+  spec hash, snapshot path, and git provenance
 - `manifest.jsonl`: one row per attempted execution child, including skipped
   cases and issue codes
 - `parent_manifest.jsonl`: one row per scientific parent config
@@ -332,11 +333,9 @@ For chemistry model comparison, prefer `split.mode: cv` with
 `split.strategy: scaffold`. Scaffold CV requires a usable SMILES column that can
 produce `canonical_smiles` in curated data.
 
-Separate training-time hyperparameter search from evaluation design.
-`train.tuning.method: train_cv` is inner tuning; `split.mode: cv` or
-`nested_holdout_cv` is the outer evaluation design. Use `model_search` when
-hyperparameter candidates should be fixed scientific parents that fan out across
-the same CV folds.
+Keep runtime child configs fixed. `split.mode: cv` or `nested_holdout_cv`
+defines the evaluation fanout; `model_search` defines hyperparameter candidates
+as fixed scientific parents that fan out across the same CV folds.
 
 Run a small pilot before the full DOE. Confirm metrics files, split metadata,
 runtime, and memory behavior before spending the full compute budget.

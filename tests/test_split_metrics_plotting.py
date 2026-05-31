@@ -589,31 +589,98 @@ def test_train_model_supports_classification_for_tabular_models(tmp_path, model_
     assert preds["y_proba"].between(0, 1).all()
 
 
-@pytest.mark.parametrize(
-    ("model_type", "search_type", "estimator_type"),
-    [
-        ("random_forest", "RandomizedSearchCV", "RandomForestClassifier"),
-        ("decision_tree", "RandomizedSearchCV", "DecisionTreeClassifier"),
-        ("xgboost", "RandomizedSearchCV", "XGBClassifier"),
-        ("svm", "GridSearchCV", "SVC"),
-    ],
-)
-def test_initialize_model_builds_classification_train_cv_searchers(
-    model_type, search_type, estimator_type
-):
+@pytest.mark.parametrize("model_type", ["random_forest", "decision_tree", "xgboost", "svm"])
+def test_initialize_model_rejects_child_level_train_cv(model_type):
+    with pytest.raises(ValueError, match="DOE model_search"):
+        train_models._initialize_model(
+            model_type=model_type,
+            random_state=42,
+            cv_folds=2,
+            search_iters=1,
+            n_jobs=1,
+            tuning_method="train_cv",
+            model_params={},
+            task_type="classification",
+        )
+
+
+def test_initialize_model_rejects_child_level_dl_hpo_method():
+    with pytest.raises(ValueError, match="DOE model_search"):
+        train_models._initialize_model(
+            model_type="dl_simple",
+            random_state=42,
+            cv_folds=2,
+            search_iters=1,
+            input_dim=4,
+            n_jobs=1,
+            tuning_method="optuna",
+            model_params={},
+            task_type="classification",
+        )
+
+
+def test_train_model_rejects_child_level_use_hpo(tmp_path):
+    X = pd.DataFrame({"f0": [0.0, 1.0, 2.0, 3.0]})
+    y = pd.Series([0.0, 1.0, 2.0, 3.0])
+
+    with pytest.raises(ValueError, match="DOE model_search"):
+        train_models.train_model(
+            X_train=X.iloc[:2],
+            y_train=y.iloc[:2],
+            X_test=X.iloc[2:],
+            y_test=y.iloc[2:],
+            model_type="random_forest",
+            output_dir=str(tmp_path),
+            use_hpo=True,
+            model_config={"tuning": {"method": "fixed"}},
+        )
+
+
+def test_train_model_rejects_runtime_train_cv(tmp_path):
+    X = pd.DataFrame({"f0": [0.0, 1.0, 2.0, 3.0]})
+    y = pd.Series([0.0, 1.0, 2.0, 3.0])
+
+    with pytest.raises(ValueError, match="DOE model_search"):
+        train_models.train_model(
+            X_train=X.iloc[:2],
+            y_train=y.iloc[:2],
+            X_test=X.iloc[2:],
+            y_test=y.iloc[2:],
+            model_type="random_forest",
+            output_dir=str(tmp_path),
+            model_config={"tuning": {"method": "train_cv"}},
+        )
+
+
+def test_train_model_rejects_model_config_use_hpo(tmp_path):
+    X = pd.DataFrame({"f0": [0.0, 1.0, 2.0, 3.0]})
+    y = pd.Series([0.0, 1.0, 2.0, 3.0])
+
+    with pytest.raises(ValueError, match="DOE model_search"):
+        train_models.train_model(
+            X_train=X.iloc[:2],
+            y_train=y.iloc[:2],
+            X_test=X.iloc[2:],
+            y_test=y.iloc[2:],
+            model_type="random_forest",
+            output_dir=str(tmp_path),
+            model_config={"tuning": {"method": "fixed", "use_hpo": True}},
+        )
+
+
+def test_initialize_model_builds_fixed_classification_estimator():
     model = train_models._initialize_model(
-        model_type=model_type,
+        model_type="random_forest",
         random_state=42,
         cv_folds=2,
         search_iters=1,
         n_jobs=1,
-        tuning_method="train_cv",
+        tuning_method="fixed",
         model_params={},
         task_type="classification",
     )
 
-    assert model.__class__.__name__ == search_type
-    assert getattr(model, "estimator").__class__.__name__ == estimator_type
+    assert model.__class__.__name__ == "RandomForestClassifier"
 
 
 def test_predict_classification_outputs_uses_decision_function_when_no_proba():

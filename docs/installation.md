@@ -62,28 +62,28 @@ pip install pytest
 
 ## Optional. Deep-learning models
 
-Install PyTorch and Optuna if you want to run neural network model families such as `dl_simple`,
+Install PyTorch if you want to run neural network model families such as `dl_simple`,
 `dl_deep`, `dl_gru`, `dl_resmlp`, `dl_tabtransformer`, or `dl_aereg`.
 
 For CUDA systems, choose the PyTorch index URL that matches your driver/CUDA stack. For example:
 
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install pytorch-lightning optuna
+pip install pytorch-lightning
 ```
 
 For CPU-only use:
 
 ```bash
 pip install torch torchvision torchaudio
-pip install pytorch-lightning optuna
+pip install pytorch-lightning
 ```
 
 For Apple Silicon or other CPU-only systems, install the standard PyTorch wheels:
 
 ```bash
 pip install torch torchvision torchaudio
-pip install pytorch-lightning optuna
+pip install pytorch-lightning
 ```
 
 ## Optional. TDC datasets

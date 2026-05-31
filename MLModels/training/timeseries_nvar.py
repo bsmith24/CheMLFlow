@@ -16,8 +16,9 @@ This module owns the `train.timeseries` pipeline node's contract:
 
 The two-phase Adam → L-BFGS training and the windowed autoregressive rollout
 are ported from the user's notebook reference implementation, but parameterized
-so the trainer is dataset-agnostic. The Optuna search lives in the dl_registry
-machinery; this module is invoked once per (case, fold) by the training node.
+so the trainer is dataset-agnostic. Hyperparameter candidates are expected to
+arrive as fixed `train.model.params` from DOE `model_search`; this module is
+invoked once per generated execution child by the training node.
 """
 
 from __future__ import annotations
@@ -611,10 +612,14 @@ class TimeSeriesTrainResult:
 
 
 # ---------------------------------------------------------------------------
-# Optuna search (in-loop, per case)
+# Legacy in-loop Optuna search
 # ---------------------------------------------------------------------------
 #
-# Each trial:
+# Runtime access to this route is disabled. Parent-level DOE `model_search`
+# now owns hyperparameter candidate generation. The helper body is retained as
+# historical/private implementation detail, but direct calls fail fast.
+#
+# The old trial protocol was:
 #   1. Sample a params dict from the search space defined in dl_registry.
 #   2. Build a fresh TrainingConfig by merging:
 #         dl_registry.default_params  <- baseline
@@ -624,9 +629,8 @@ class TimeSeriesTrainResult:
 #   4. Run windowed rollout on val.
 #   5. Return val RMSE at the largest horizon.
 #
-# The DOE varies scientific factors (noise, connectome_mode, etc.) across cases.
-# Within each case, this Optuna loop varies architectural/optimization knobs
-# (k, hidden_dim, lr_adam, ...). Those two layers stay strictly separated.
+# The DOE now varies both scientific factors and model_search candidates as
+# parent cases. Runtime child runs receive fixed params.
 
 
 def _trial_seed(base_seed: int, trial_number: int) -> int:
@@ -728,17 +732,17 @@ def _run_optuna_timeseries(
     tuning_block: dict[str, Any],
     global_random_state: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Run an in-loop Optuna search; return (best_params, study_summary).
+    """Legacy private in-loop Optuna search; disabled for runtime use."""
+    raise ValueError(
+        "Runtime child-level time-series Optuna search is disabled. "
+        "Use DOE model_search to create parent-level fixed hyperparameter cases."
+    )
 
-    `best_params` contains only the searched axes. Callers merge it into the
-    user's model_params and re-run the standard fixed train to produce the
-    final on-disk artifacts.
-    """
     try:
         import optuna
     except ImportError as exc:
         raise ImportError(
-            "tuning.method=optuna requires the optuna package. "
+            "The legacy time-series Optuna helper requires the optuna package. "
             "Install with `pip install optuna`."
         ) from exc
 
@@ -945,13 +949,9 @@ def train_timeseries_nvar(
       * `train.tuning.method == "fixed"` (default): train once with the
         hyperparameters in `model_params`, fall back to dl_registry defaults
         for anything not provided.
-      * `train.tuning.method == "optuna"`: in-loop hyperparameter search.
-        Sample from the search space in `dl_registry.build_timeseries_dl_search_config`,
-        train each trial, score by validation rollout RMSE at the largest
-        horizon, then retrain the best trial's params and write the
-        usual artifacts. The number of trials is `train.tuning.n_trials`
-        (default 30). The search axes are defined in `dl_registry`, not in
-        the YAML — to vary scientific factors across experiments, use the DOE.
+
+    Runtime child-level Optuna search is disabled. Use DOE `model_search` when
+    time-series hyperparameter candidates should be scientific parent cases.
     """
     if model_type not in SUPPORTED_MODEL_TYPES:
         raise ValueError(
@@ -963,38 +963,11 @@ def train_timeseries_nvar(
     tuning_block = train_block.get("tuning", {}) if isinstance(train_block, dict) else {}
     tuning_method = str(tuning_block.get("method", "fixed")).strip().lower()
 
-    if tuning_method == "optuna":
-        best_params, study_summary = _run_optuna_timeseries(
-            model_type=model_type,
-            raw_path=raw_path,
-            user_model_params=dict(model_params or {}),
-            train_block=train_block,
-            split_block=split_block,
-            tuning_block=tuning_block,
-            global_random_state=int(global_random_state),
-        )
-        # Merge searched best_params into the user's fixed params and rerun
-        # the final train+test protocol. User-supplied YAML values for searched
-        # axes are intentionally overridden by best_params here; that's the
-        # whole point of running the search.
-        merged_params = {**model_params, **best_params}
-        train_block_for_final = dict(train_block or {})
-        train_block_for_final["tuning"] = {"method": "fixed"}
-        return _train_timeseries_nvar_repeated_final(
-            model_type=model_type,
-            raw_path=raw_path,
-            output_dir=output_dir,
-            model_params=merged_params,
-            train_block=train_block_for_final,
-            split_block=split_block,
-            global_random_state=int(global_random_state),
-            optuna_summary=study_summary,
-        )
-
     if tuning_method not in {"fixed", ""}:
         raise ValueError(
             f"Unsupported tuning.method={tuning_method!r} for train.timeseries; "
-            "expected 'fixed' or 'optuna'."
+            "runtime child-level hyperparameter search is disabled. "
+            "Use DOE model_search to create parent-level fixed hyperparameter cases."
         )
 
     return _train_timeseries_nvar_repeated_final(

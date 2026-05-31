@@ -8,7 +8,6 @@ import os
 import random
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +45,7 @@ _EXECUTION_ONLY_AXES = {
     "split.inner.fold_index",
     "split.inner.repeat_index",
 }
+_RUNTIME_TUNING_PREFIXES = ("train.tuning.", "train_tdc.tuning.")
 _MODEL_SEARCH_METHODS = {"grid", "random"}
 _MODEL_PARAM_PREFIX = "train.model.params."
 _LABEL_IC50_REQUIRED_COLUMNS = ("standard_value",)
@@ -281,13 +281,45 @@ def _flatten_dict(obj: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 
 def _validate_search_space_axes(search_space_flat: dict[str, Any]) -> None:
     invalid_axes = sorted(set(search_space_flat) & _EXECUTION_ONLY_AXES)
-    if not invalid_axes:
-        return
-    raise DOEGenerationError(
-        "Execution-only split axes must not be placed in search_space. "
-        "Use defaults for an explicit retry/debug slice, or omit them so DOE can expand "
-        f"the folds/repeats automatically. Invalid axes: {', '.join(invalid_axes)}"
+    if invalid_axes:
+        raise DOEGenerationError(
+            "Execution-only split axes must not be placed in search_space. "
+            "Use defaults for an explicit retry/debug slice, or omit them so DOE can expand "
+            f"the folds/repeats automatically. Invalid axes: {', '.join(invalid_axes)}"
+        )
+
+    tuning_axes = sorted(
+        key
+        for key in search_space_flat
+        if any(key.startswith(prefix) for prefix in _RUNTIME_TUNING_PREFIXES)
     )
+    if tuning_axes:
+        raise DOEGenerationError(
+            "Runtime child-level tuning axes must not be placed in search_space. "
+            "Use model_search to create parent-level fixed hyperparameter cases. "
+            f"Invalid axes: {', '.join(tuning_axes)}"
+        )
+
+
+def _validate_default_runtime_tuning(defaults_flat: dict[str, Any]) -> None:
+    for key in sorted(defaults_flat):
+        if not any(key.startswith(prefix) for prefix in _RUNTIME_TUNING_PREFIXES):
+            continue
+        leaf = key.rsplit(".", 1)[-1]
+        value = defaults_flat[key]
+        if leaf == "method":
+            method = str(value or "fixed").strip().lower()
+            if method in {"", "fixed"}:
+                continue
+        elif leaf == "use_hpo":
+            if not _as_bool(value):
+                continue
+        else:
+            continue
+        raise DOEGenerationError(
+            f"Runtime child-level tuning setting defaults.{key}={value!r} is disabled. "
+            "Use model_search to create parent-level fixed hyperparameter cases."
+        )
 
 
 def _set_dotted(container: dict[str, Any], dotted: str, value: Any) -> None:
@@ -2211,6 +2243,7 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
     defaults_flat = _flatten_dict(defaults_cfg)
     search_space_flat = _flatten_dict(search_space)
     _validate_search_space_axes(search_space_flat)
+    _validate_default_runtime_tuning(defaults_flat)
     declared_axes = set(defaults_flat) | set(search_space_flat)
     max_cases = constraints_cfg.get("max_cases")
     if max_cases is not None:
@@ -2423,7 +2456,6 @@ def generate_doe(spec: dict[str, Any], doe_path: str | None = None) -> dict[str,
 
     git_provenance = _capture_git_provenance(output_dir)
     summary = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "doe_path": doe_path,
         "profile": profile.name,
         "task_type": resolved_task,

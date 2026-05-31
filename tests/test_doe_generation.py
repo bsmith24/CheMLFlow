@@ -554,6 +554,45 @@ def test_generate_doe_model_search_random_samples_tabular_params(tmp_path: Path)
         assert "use_hpo" not in config["train"]["tuning"]
 
 
+def test_generate_doe_model_search_random_is_repeatable_byte_for_byte(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "random",
+            "n_trials": 3,
+            "seed": 7,
+            "params": {
+                "n_estimators": {"type": "int", "low": 50, "high": 150, "step": 50},
+                "max_depth": {"type": "categorical", "choices": [None, 4, 8]},
+                "max_features": {"type": "categorical", "choices": ["sqrt", "log2"]},
+            },
+        }
+    }
+
+    def _generated_bytes(result: dict) -> dict[str, bytes]:
+        output_dir = Path(spec["output"]["dir"])
+        paths = [
+            Path(result["summary_path"]),
+            Path(result["manifest_path"]),
+            Path(result["parent_manifest_path"]),
+            output_dir / "doe_spec.input.yaml",
+        ]
+        git_patch = result["summary"].get("git_diff_snapshot_path")
+        if git_patch:
+            paths.append(Path(git_patch))
+        paths.extend(Path(case["config_path"]) for case in result["valid_cases"])
+        return {
+            str(path.relative_to(output_dir)): path.read_bytes()
+            for path in sorted(paths)
+        }
+
+    first = _generated_bytes(generate_doe(spec))
+    second = _generated_bytes(generate_doe(spec))
+
+    assert second == first
+
+
 def test_generate_doe_model_search_random_samples_xgboost_params(tmp_path: Path) -> None:
     spec = _base_clf_doe(tmp_path)
     spec["search_space"]["train.model.type"] = ["xgboost"]
@@ -611,6 +650,45 @@ def test_generate_doe_model_search_random_samples_dl_params_without_child_hpo(
         assert 0.0001 <= params["learning_rate"] <= 0.01
         assert params["batch_size"] in {32, 64}
         assert config["train"]["tuning"] == {"method": "fixed"}
+
+
+@pytest.mark.parametrize(
+    ("default_key", "default_value"),
+    [
+        ("train.tuning.method", "train_cv"),
+        ("train.tuning.method", "optuna"),
+        ("train.tuning.use_hpo", True),
+    ],
+)
+def test_generate_doe_rejects_child_level_tuning_defaults(
+    tmp_path: Path,
+    default_key: str,
+    default_value: object,
+) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["defaults"][default_key] = default_value
+
+    with pytest.raises(DOEGenerationError, match="Runtime child-level tuning setting"):
+        generate_doe(spec)
+
+
+@pytest.mark.parametrize(
+    "axis",
+    [
+        "train.tuning.method",
+        "train.tuning.hpo_trials",
+        "train_tdc.tuning.use_hpo",
+    ],
+)
+def test_generate_doe_rejects_child_level_tuning_search_axes(
+    tmp_path: Path,
+    axis: str,
+) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"][axis] = ["fixed"]
+
+    with pytest.raises(DOEGenerationError, match="Runtime child-level tuning axes"):
+        generate_doe(spec)
 
 
 def test_generate_doe_model_search_invalid_specs_fail_clearly(tmp_path: Path) -> None:

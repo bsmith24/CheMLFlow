@@ -4,6 +4,11 @@ from typing import Any, Callable
 
 from . import dl_registry, sklearn_models
 
+_PARENT_LEVEL_MODEL_SEARCH_MESSAGE = (
+    "Runtime child-level hyperparameter search is disabled. Use DOE model_search "
+    "to create parent-level fixed hyperparameter cases that fan out across CV folds."
+)
+
 
 def is_dl_model(model_type: str) -> bool:
     return str(model_type).strip().lower().startswith("dl_")
@@ -23,8 +28,11 @@ def initialize_model(
     dl_search_config_cls: Callable[..., Any],
 ):
     tuning_method = str(tuning_method or "fixed").strip().lower()
-    if tuning_method not in {"train_cv", "fixed"}:
-        raise ValueError(f"Unsupported model.tuning.method={tuning_method!r}; expected 'train_cv' or 'fixed'.")
+    if tuning_method != "fixed":
+        raise ValueError(
+            f"Unsupported model.tuning.method={tuning_method!r}. "
+            + _PARENT_LEVEL_MODEL_SEARCH_MESSAGE
+        )
 
     if sklearn_models.is_tabular_model(model_type):
         return sklearn_models.build_tabular_model(

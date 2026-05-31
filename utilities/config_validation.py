@@ -185,6 +185,41 @@ def _infer_runtime_profile_key(task_type: str, source_type: str, nodes: list[str
     return None
 
 
+def _runtime_child_tuning_issue(path: str, value: Any) -> ValidationIssue:
+    return ValidationIssue(
+        code="CFG_CHILD_LEVEL_HPO_UNSUPPORTED",
+        path=path,
+        message=(
+            f"Runtime child-level hyperparameter search setting {path}={value!r} is disabled. "
+            "Use DOE model_search to create parent-level fixed hyperparameter cases."
+        ),
+    )
+
+
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _append_child_level_tuning_issues(
+    issues: list[ValidationIssue],
+    tuning_cfg: dict[str, Any],
+    path_prefix: str,
+) -> None:
+    if not isinstance(tuning_cfg, dict):
+        return
+    method = str(tuning_cfg.get("method", "fixed")).strip().lower() or "fixed"
+    if method != "fixed":
+        issues.append(_runtime_child_tuning_issue(f"{path_prefix}.method", method))
+    if _is_truthy(tuning_cfg.get("use_hpo", False)):
+        issues.append(_runtime_child_tuning_issue(f"{path_prefix}.use_hpo", tuning_cfg.get("use_hpo")))
+
+
 def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     blocks_present = set(config.keys())
@@ -444,6 +479,13 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
                     )
                 )
 
+    if "train" in nodes or "train.timeseries" in nodes:
+        _append_child_level_tuning_issues(
+            issues,
+            _as_dict(train_cfg.get("tuning")),
+            "train.tuning",
+        )
+
     pipeline_cfg = _as_dict(config.get("pipeline"))
     configured_feature_input = _normalize_feature_input(pipeline_cfg.get("feature_input", ""))
     has_explicit_feature_input = any(node in _FEATURE_INPUT_NODES for node in nodes)
@@ -606,6 +648,13 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
                 )
             else:
                 train_tdc_model_type = str(model_cfg.get("type", "")).strip().lower()
+
+    if "train.tdc" in nodes:
+        _append_child_level_tuning_issues(
+            issues,
+            _as_dict(train_tdc_cfg.get("tuning")),
+            "train_tdc.tuning",
+        )
 
     if "get_data" in nodes:
         source_cfg = _as_dict(get_data_cfg.get("source"))

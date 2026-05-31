@@ -422,7 +422,6 @@ def train_model(
         maybe_sanitize_xgboost_feature_frames=_maybe_sanitize_xgboost_feature_frames,
         ensure_binary_labels=_ensure_binary_labels,
         initialize_model=_initialize_model,
-        run_optuna=_run_optuna,
         seed_dl_runtime=_seed_dl_runtime,
         train_dl=_train_dl,
         predict_dl=_predict_dl,

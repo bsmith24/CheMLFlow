@@ -1,10 +1,10 @@
 # ======================================================================
 # DOE spec for the time-series Connectome NVAR pipeline.
 #
-# Each DOE case is a scientifically distinct experiment. Inside every case
-# Optuna searches over architectural and optimization knobs (k, n_connectome,
-# input_scaling, lr_adam, lr_lbfgs, weight_decay) using the search space in
-# MLModels.training.dl_registry.build_timeseries_dl_search_config.
+# Each DOE case is a scientifically distinct experiment. Hyperparameter
+# candidates (k, n_connectome, input_scaling, lr_adam, lr_lbfgs, weight_decay)
+# are expanded as parent cases via model_search. Runtime child configs stay
+# fixed.
 #
 # This DOE compares:
 #   - real connectome vs degree-preserving randomized control
@@ -31,9 +31,7 @@ defaults:
   global.random_state: 2025
   global.base_dir: artifacts/data/doe_timeseries_connectome
   pipeline.feature_input: none
-  train.tuning.method: optuna
-  train.tuning.n_trials: 50
-  train.tuning.trial_epoch_cap: 500
+  train.tuning.method: fixed
   train.model.type: dl_connectome_nvar
   train.model.params.connectome_xlsx: data/connectome_hermaphrodite.xlsx
   train.model.params.connectome_sheet: hermaphrodite chemical
@@ -48,13 +46,26 @@ defaults:
   # Device selection — strict by default (see config/doe_timeseries.yaml).
   train.model.params.device: cuda
 
-# Scientific factors only. The k/n_connectome/lr_adam/lr_lbfgs/input_scaling
-# axes from the notebook are no longer here — they belong to Optuna.
+# Scientific factors only. Model-specific hyperparameters are below in
+# model_search so every sampled point becomes a DOE parent case.
 search_space:
   train.model.params.connectome_mode: [connectome, connectome_randomized]
   train.model.params.connectome_selection_mode: [top_degree, random]
   train.model.params.dataset_noise_scale: [0.0, 0.01, 0.05]
   train.model.params.train_noise_scale: [0.0, 0.05]
+
+model_search:
+  dl_connectome_nvar:
+    method: random
+    n_trials: 50
+    seed: 2025
+    params:
+      k: {type: categorical, choices: [2, 5, 10, 20, 30, 40, 50]}
+      n_connectome: {type: categorical, choices: [25, 50, 75, 100, 150, 200, 250, 300]}
+      input_scaling: {type: categorical, choices: [0.02, 0.05, 0.10, 0.20, 0.50]}
+      lr_adam: {type: categorical, choices: [1.0e-4, 3.0e-4, 1.0e-3, 3.0e-3, 1.0e-2]}
+      lr_lbfgs: {type: categorical, choices: [1.0, 0.5, 0.1]}
+      weight_decay: {type: categorical, choices: [0.0, 1.0e-8, 1.0e-6, 1.0e-4]}
 
 selection:
   max_cases: null
