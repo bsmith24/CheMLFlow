@@ -287,32 +287,6 @@ def train_chemprop_model(
         train_result_cls=TrainResult,
     )
 
-def _run_optuna(
-    config: DLSearchConfig,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_val: np.ndarray,
-    y_val: np.ndarray,
-    max_evals: int,
-    random_state: int,
-    patience: int,
-    task_type: str = "regression",
-) -> Tuple[object, dict]:
-    return training_torch_models.run_optuna(
-        config=config,
-        X_train=X_train,
-        y_train=y_train,
-        X_val=X_val,
-        y_val=y_val,
-        max_evals=max_evals,
-        random_state=random_state,
-        patience=patience,
-        task_type=task_type,
-        seed_fn=_seed_dl_runtime,
-        train_fn=_train_dl,
-        predict_fn=_predict_dl,
-    )
-
 def _initialize_model(
     model_type: str,
     random_state: int,
@@ -422,7 +396,6 @@ def train_model(
         maybe_sanitize_xgboost_feature_frames=_maybe_sanitize_xgboost_feature_frames,
         ensure_binary_labels=_ensure_binary_labels,
         initialize_model=_initialize_model,
-        run_optuna=_run_optuna,
         seed_dl_runtime=_seed_dl_runtime,
         train_dl=_train_dl,
         predict_dl=_predict_dl,

@@ -9,6 +9,11 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, r2_score
 
+_PARENT_LEVEL_MODEL_SEARCH_MESSAGE = (
+    "Runtime child-level hyperparameter search is disabled. Use DOE model_search "
+    "to create parent-level fixed hyperparameter cases that fan out across CV folds."
+)
+
 
 def _predict_dl_with_batch(
     predict_dl: Callable[..., np.ndarray],
@@ -57,7 +62,6 @@ def train_model(
     maybe_sanitize_xgboost_feature_frames: Callable[..., tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None, str | None]],
     ensure_binary_labels: Callable[[pd.Series], pd.Series],
     initialize_model: Callable[..., Any],
-    run_optuna: Callable[..., tuple[object, dict[str, Any]]],
     seed_dl_runtime: Callable[[int], None],
     train_dl: Callable[..., dict[str, Any]],
     predict_dl: Callable[..., np.ndarray],
@@ -84,6 +88,13 @@ def train_model(
     n_jobs = runtime_options.n_jobs
     tuning_method = runtime_options.tuning_method
     model_params = runtime_options.model_params
+    if use_hpo:
+        raise ValueError(_PARENT_LEVEL_MODEL_SEARCH_MESSAGE)
+    if tuning_method != "fixed":
+        raise ValueError(
+            f"Unsupported runtime tuning method {tuning_method!r}. "
+            + _PARENT_LEVEL_MODEL_SEARCH_MESSAGE
+        )
 
     logging.info(
         "Training start: model=%s task=%s tuning=%s X_train=%s X_test=%s",
@@ -235,42 +246,28 @@ def train_model(
     if isinstance(model, dl_search_config_cls):
         if X_val is None or y_val is None or len(y_val) == 0:
             raise ValueError(
-                "DL models require a validation split for early stopping/HPO. "
+                "DL models require a validation split for early stopping. "
                 "Ensure the pipeline includes the split node and set split.val_size > 0."
             )
-        if use_hpo:
-            logging.info("Running optuna for %s (%s evals)", model_type, hpo_trials)
-            estimator, best_params = run_optuna(
-                model,
-                X_train.values,
-                y_train.values,
-                X_val.values,
-                y_val.values,
-                hpo_trials,
-                random_state,
-                patience,
-                task_type=task_type,
-            )
-        else:
-            effective_params = {**model.default_params, **model_params}
-            logging.info("Training DL model: %s (fixed params)", model_type)
-            seed_dl_runtime(int(random_state))
-            nn_model = model.model_class(effective_params)
-            result = train_dl(
-                nn_model,
-                X_train.values,
-                y_train.values,
-                X_val.values,
-                y_val.values,
-                epochs=effective_params["epochs"],
-                batch_size=effective_params["batch_size"],
-                learning_rate=effective_params["learning_rate"],
-                patience=patience,
-                random_state=random_state,
-                task_type=task_type,
-            )
-            estimator = result["model"]
-            best_params = {**effective_params, **result["best_params"]}
+        effective_params = {**model.default_params, **model_params}
+        logging.info("Training DL model: %s (fixed params)", model_type)
+        seed_dl_runtime(int(random_state))
+        nn_model = model.model_class(effective_params)
+        result = train_dl(
+            nn_model,
+            X_train.values,
+            y_train.values,
+            X_val.values,
+            y_val.values,
+            epochs=effective_params["epochs"],
+            batch_size=effective_params["batch_size"],
+            learning_rate=effective_params["learning_rate"],
+            patience=patience,
+            random_state=random_state,
+            task_type=task_type,
+        )
+        estimator = result["model"]
+        best_params = {**effective_params, **result["best_params"]}
 
         model_path = os.path.join(output_dir, f"{model_type}_best_model.pth")
         dl_batch_size = max(1, int(best_params.get("batch_size", 64)))

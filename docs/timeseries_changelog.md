@@ -3,6 +3,10 @@
 All changes here are scoped to the time-series Adaptive NVAR / Connectome NVAR
 integration. Earlier baseline behavior of CheMLFlow is unchanged.
 
+> Current note: runtime child-level `train.tuning.method: optuna` is now
+> disabled. Use DOE `model_search` to create parent-level fixed time-series
+> hyperparameter cases; the old in-loop Optuna implementation has been removed.
+
 ## v6 — 2026-05-15
 
 Four targeted fixes prompted by the first real HPCC run: silent CPU fallback
@@ -33,8 +37,8 @@ continuous `lr_adam` axis that diverged from the notebook protocol.
   from the first 10 lines of the log instead of being a 35-minute mystery.
 
 - **Repeated-final UX (the "25 test runs" confusion).** The v3 patch already
-  retrains 25 times after Optuna picks hyperparameters, but the user
-  experience made it hard to tell what was happening:
+  retrained 25 times after the searched hyperparameter point was selected, but
+  the user experience made it hard to tell what was happening:
     - Each iteration logged the same `"Training on device: cpu"` line as
       Optuna trials, with no visible boundary between "we're still searching"
       and "we're now doing final test-runs".
@@ -58,7 +62,7 @@ continuous `lr_adam` axis that diverged from the notebook protocol.
       is killed at run 7 of 25, the metrics.json still has a meaningful
       mean±std over the completed 7 runs and clearly marks itself partial.
 
-- **Optuna search space for `dl_adaptive_nvar` is now notebook-faithful.**
+- **Parent-level search space for `dl_adaptive_nvar` is now notebook-faithful.**
   `lr_adam` was a continuous log-uniform float `(1e-4, 1e-2)`. The notebook
   uses `suggest_categorical("lr_adam", [1e-4, 1e-3, 1e-2])`. v6 matches.
   `dl_connectome_nvar` was already all-categorical; verified to match
@@ -69,7 +73,7 @@ continuous `lr_adam` axis that diverged from the notebook protocol.
 
 - `MLModels.training.timeseries_nvar._resolve_device(...)` and
   `_log_device_diagnostics(...)`. Single shared device-selection path
-  used by both Optuna trials and final test-runs.
+  used by final fixed-param test-runs.
 - `TrainingConfig.device: str = "auto"`.
 - New tests:
     - `test_device_strict_cuda_raises_when_unavailable`
@@ -101,15 +105,10 @@ meaning) — happy to add it under a different knob.
 
 ## v3 — 2026-05-13
 
-Architectural correction. Earlier versions confused two distinct concerns
-(scientific experiment design vs hyperparameter tuning) by baking the
-Optuna grid into the DOE. v3 separates them properly:
-
-  * **DOE** = scientifically distinct experiments (noise levels,
-    connectome_mode, selection_mode, …).
-  * **Optuna** = hyperparameter search *within* each DOE case
-    (k, hidden_dim, lr_adam, lr_lbfgs, n_connectome, input_scaling, …).
-    Each case runs its own Optuna study in-loop.
+Historical note, now superseded. v3 introduced an in-loop time-series Optuna
+path, but current CheMLFlow disables runtime child-level hyperparameter search
+and removes the private in-loop helper. Use DOE `model_search` so each Optuna
+parent trial is a fixed scientific parent case before execution child fanout.
 
 ### Added
 
@@ -120,35 +119,19 @@ Optuna grid into the DOE. v3 separates them properly:
   `hidden_dim`, Connectome NVAR has `n_connectome` and `input_scaling`,
   etc. The search-space spec format (`{"type": "categorical|float|int", ...}`)
   is identical to the tabular DL path, so it reads the same way.
-- `MLModels.training.timeseries_nvar._run_optuna_timeseries(...)`. Wraps
-  Optuna's `TPESampler` study around the existing trainer. Each trial:
-  sample → merge with registry defaults + user YAML → build → train
-  Adam→L-BFGS → score on val rollout RMSE at the largest horizon.
-  Returns the best trial's params, which the outer trainer then merges
-  into the final retrain with the full epoch budget.
-- New tuning controls in YAML:
-    - `train.tuning.method`: `"fixed"` (default) or `"optuna"`.
-    - `train.tuning.n_trials`: trial count when method=optuna (default 30).
-    - `train.tuning.trial_epoch_cap`: per-trial Adam+L-BFGS epoch cap, so
-      sweeps finish quickly; the final retrain uses the full epoch budget.
-    - `train.tuning.timeout`: wall-clock timeout (seconds), passed through
-      to `study.optimize`.
-    - `train.tuning.verbose`: surface Optuna's INFO chatter.
-- `optuna>=3.5` added to optional deps in `requirements.txt`. The base
-  install does not pull it in; `tuning.method: optuna` raises a clear
-  ImportError if the package is missing.
-- `metrics.json` now carries a `"tuning"` block when method=optuna:
-  `method`, `n_trials_requested`, `n_trials_completed`, `best_trial_number`,
-  `best_value`, `best_params`, `search_axes`, `trial_epoch_cap`. Reflects
-  exactly what was searched and chosen.
+- The private in-loop time-series Optuna helper added in v3 has now been
+  removed.
+- The YAML/runtime tuning controls added in v3 are superseded by DOE
+  `model_search`. Runtime time-series configs should keep
+  `train.tuning.method: fixed`.
+- Runtime metrics no longer include an in-loop tuning summary because children
+  receive concrete `train.model.params` from DOE generation.
 - Two new tests:
     - `test_dl_registry_timeseries_search_configs` verifies that
       `dl_adaptive_nvar` and `dl_connectome_nvar` have distinct, well-typed
       search spaces (and that the wrong model_type fails clearly).
-    - `test_train_timeseries_optuna_runs_and_writes_artifacts` runs 3
-      trials end-to-end on a synthetic series and asserts the tuning
-      summary lands in `metrics.json` and is consistent with the final
-      retrained config.
+    - The former in-loop tuning smoke test is now a rejection test that points
+      users to parent-level DOE `model_search`.
 
 ### Changed
 
@@ -166,10 +149,8 @@ Optuna grid into the DOE. v3 separates them properly:
 
 ### Verified
 
-- End-to-end run of a generated DOE case (`case_0001`) against the user's
-  `ground_truth.npy`: Optuna explored 3 trials (axes: k, hidden_dim,
-  lr_adam, lr_lbfgs), picked the winner, retrained, and wrote a
-  `metrics.json` whose `tuning` block matched the chosen `config`.
+- Historical end-to-end in-loop tuning verification is superseded by current
+  parent-level DOE `model_search` generation and fixed child execution tests.
 - 6/6 new time-series tests pass. 173/173 non-rdkit existing tests pass.
 
 ---

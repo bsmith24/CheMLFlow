@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import builtins
 import json
+import math
+import random
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -12,6 +16,87 @@ from utilities.doe import DOEGenerationError, generate_doe
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _FakeCategoricalDistribution:
+    def __init__(self, choices):
+        self.choices = list(choices)
+
+
+class _FakeIntDistribution:
+    def __init__(self, *, low, high, step=1, log=False):
+        self.low = low
+        self.high = high
+        self.step = step
+        self.log = log
+
+
+class _FakeFloatDistribution:
+    def __init__(self, *, low, high, step=None, log=False):
+        self.low = low
+        self.high = high
+        self.step = step
+        self.log = log
+
+
+class _FakeTPESampler:
+    def __init__(self, seed=0):
+        self.rng = random.Random(seed)
+
+
+class _FakeOptunaStudy:
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def ask(self, *, fixed_distributions):
+        params = {}
+        for name, dist in fixed_distributions.items():
+            params[name] = self._sample(dist)
+        return SimpleNamespace(params=params)
+
+    def _sample(self, dist):
+        rng = self.sampler.rng
+        if isinstance(dist, _FakeCategoricalDistribution):
+            return rng.choice(dist.choices)
+        if isinstance(dist, _FakeIntDistribution):
+            if dist.log:
+                value = math.exp(rng.uniform(math.log(dist.low), math.log(dist.high)))
+                return max(dist.low, min(dist.high, int(round(value))))
+            choices = list(range(dist.low, dist.high + 1, dist.step))
+            return rng.choice(choices)
+        if isinstance(dist, _FakeFloatDistribution):
+            if dist.log:
+                value = math.exp(rng.uniform(math.log(dist.low), math.log(dist.high)))
+            else:
+                value = rng.uniform(dist.low, dist.high)
+            if dist.step is not None:
+                value = dist.low + round((value - dist.low) / dist.step) * dist.step
+            return max(dist.low, min(dist.high, float(value)))
+        raise AssertionError(f"Unknown fake distribution: {dist!r}")
+
+
+class _FakeOptunaModule:
+    distributions = SimpleNamespace(
+        CategoricalDistribution=_FakeCategoricalDistribution,
+        IntDistribution=_FakeIntDistribution,
+        FloatDistribution=_FakeFloatDistribution,
+    )
+    samplers = SimpleNamespace(
+        TPESampler=_FakeTPESampler,
+    )
+
+    @staticmethod
+    def create_study(*, direction, sampler):
+        assert direction in {"maximize", "minimize"}
+        return _FakeOptunaStudy(sampler)
+
+
+def _patch_fake_optuna(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doe_module,
+        "_import_optuna_for_model_search",
+        lambda model_type: _FakeOptunaModule,
+    )
 
 
 def _pgp_dataset_path() -> str:
@@ -435,6 +520,563 @@ def test_generate_doe_auto_expands_cv_execution_axes_when_omitted(tmp_path: Path
         (1, 1),
         (1, 2),
     }
+
+
+def test_generate_doe_model_search_grid_expands_params_as_cv_parents(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["split.mode"] = ["cv"]
+    spec["search_space"]["split.strategy"] = ["random"]
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["defaults"]["split.cv.n_splits"] = 2
+    spec["defaults"]["split.cv.repeats"] = 1
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": {
+                "n_estimators": [100, 200],
+                "max_depth": [3, None],
+            },
+        }
+    }
+
+    result = generate_doe(spec)
+    summary = result["summary"]
+
+    assert summary["total_parent_cases"] == 4
+    assert summary["total_execution_cases"] == 8
+    assert summary["valid_cases"] == 8
+    assert len(result["parent_cases"]) == 4
+
+    first_parent = result["parent_cases"][0]
+    assert first_parent["execution_count"] == 2
+    assert first_parent["execution_labels"] == ["rep0_fold0", "rep0_fold1"]
+    assert first_parent["factors"]["train.model.params.n_estimators"] == 100
+    assert first_parent["factors"]["train.model.params.max_depth"] == 3
+    parent_scientific_ids = {case["scientific_config_id"] for case in result["parent_cases"]}
+    assert len(parent_scientific_ids) == 4
+
+    first_child = result["valid_cases"][0]
+    config = yaml.safe_load(Path(first_child["config_path"]).read_text(encoding="utf-8"))
+    assert config["train"]["model"]["params"] == {"max_depth": 3, "n_estimators": 100}
+    assert "model_search" not in config
+    assert "split.cv.fold_index" not in first_child["factors"]
+    assert set(first_child["execution_factors"]) == {"split.cv.fold_index", "split.cv.repeat_index"}
+    for parent in result["parent_cases"]:
+        child_scientific_ids = {
+            case["scientific_config_id"]
+            for case in result["valid_cases"]
+            if case["parent_case_id"] == parent["case_id"]
+        }
+        assert child_scientific_ids == {parent["scientific_config_id"]}
+
+
+def test_generate_doe_model_search_applies_only_to_matching_model(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest", "xgboost"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": {"n_estimators": [50, 100]},
+        }
+    }
+
+    result = generate_doe(spec)
+
+    assert result["summary"]["total_parent_cases"] == 3
+    models = [case["model_type"] for case in result["parent_cases"]]
+    assert models.count("random_forest") == 2
+    assert models.count("xgboost") == 1
+
+    configs = [
+        yaml.safe_load(Path(case["config_path"]).read_text(encoding="utf-8"))
+        for case in result["valid_cases"]
+    ]
+    rf_params = [
+        cfg["train"]["model"].get("params", {})
+        for cfg in configs
+        if cfg["train"]["model"]["type"] == "random_forest"
+    ]
+    xgb_params = [
+        cfg["train"]["model"].get("params", {})
+        for cfg in configs
+        if cfg["train"]["model"]["type"] == "xgboost"
+    ]
+    assert rf_params == [{"n_estimators": 50}, {"n_estimators": 100}]
+    assert xgb_params == [{}]
+
+
+def test_generate_doe_model_search_optuna_samples_tabular_params(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_fake_optuna(monkeypatch)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["split.mode"] = ["cv"]
+    spec["defaults"]["split.cv.n_splits"] = 2
+    spec["defaults"]["split.cv.repeats"] = 1
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "optuna",
+            "n_trials": 3,
+            "seed": 7,
+            "params": {
+                "n_estimators": {"type": "int", "low": 50, "high": 150, "step": 50},
+                "max_depth": {"type": "categorical", "choices": [None, 4, 8]},
+                "max_features": {"type": "categorical", "choices": ["sqrt", "log2"]},
+            },
+        }
+    }
+
+    result = generate_doe(spec)
+
+    assert result["summary"]["total_parent_cases"] == 3
+    assert result["summary"]["total_execution_cases"] == 6
+    assert result["summary"]["valid_cases"] == 6
+    assert {parent["execution_count"] for parent in result["parent_cases"]} == {2}
+    parent_scientific_ids = {case["scientific_config_id"] for case in result["parent_cases"]}
+    assert len(parent_scientific_ids) == 3
+    for parent in result["parent_cases"]:
+        child_scientific_ids = {
+            case["scientific_config_id"]
+            for case in result["valid_cases"]
+            if case["parent_case_id"] == parent["case_id"]
+        }
+        assert child_scientific_ids == {parent["scientific_config_id"]}
+    configs = [
+        yaml.safe_load(Path(case["config_path"]).read_text(encoding="utf-8"))
+        for case in result["valid_cases"]
+    ]
+    seen_params = {json.dumps(cfg["train"]["model"]["params"], sort_keys=True) for cfg in configs}
+    assert len(seen_params) == 3
+    for config in configs:
+        params = config["train"]["model"]["params"]
+        assert params["n_estimators"] in {50, 100, 150}
+        assert params["max_depth"] in {None, 4, 8}
+        assert params["max_features"] in {"sqrt", "log2"}
+        assert config["train"]["tuning"]["method"] == "fixed"
+        assert "use_hpo" not in config["train"]["tuning"]
+
+
+def test_generate_doe_model_search_optuna_is_repeatable_byte_for_byte(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_fake_optuna(monkeypatch)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "optuna",
+            "n_trials": 3,
+            "seed": 7,
+            "params": {
+                "n_estimators": {"type": "int", "low": 50, "high": 150, "step": 50},
+                "max_depth": {"type": "categorical", "choices": [None, 4, 8]},
+                "max_features": {"type": "categorical", "choices": ["sqrt", "log2"]},
+            },
+        }
+    }
+
+    def _generated_bytes(result: dict) -> dict[str, bytes]:
+        output_dir = Path(spec["output"]["dir"])
+        paths = [
+            Path(result["summary_path"]),
+            Path(result["manifest_path"]),
+            Path(result["parent_manifest_path"]),
+            output_dir / "doe_spec.input.yaml",
+        ]
+        git_patch = result["summary"].get("git_diff_snapshot_path")
+        if git_patch:
+            paths.append(Path(git_patch))
+        paths.extend(Path(case["config_path"]) for case in result["valid_cases"])
+        return {
+            str(path.relative_to(output_dir)): path.read_bytes()
+            for path in sorted(paths)
+        }
+
+    first = _generated_bytes(generate_doe(spec))
+    second = _generated_bytes(generate_doe(spec))
+
+    assert second == first
+
+
+def test_generate_doe_model_search_optuna_samples_xgboost_params(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_fake_optuna(monkeypatch)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["xgboost"]
+    spec["model_search"] = {
+        "xgboost": {
+            "method": "optuna",
+            "n_trials": 2,
+            "seed": 11,
+            "params": {
+                "n_estimators": {"type": "int", "low": 100, "high": 300, "step": 100},
+                "max_depth": {"type": "int", "low": 3, "high": 7},
+                "learning_rate": {"type": "float", "low": 0.01, "high": 0.2, "log": True},
+            },
+        }
+    }
+
+    result = generate_doe(spec)
+
+    assert result["summary"]["total_parent_cases"] == 2
+    for case in result["valid_cases"]:
+        config = yaml.safe_load(Path(case["config_path"]).read_text(encoding="utf-8"))
+        params = config["train"]["model"]["params"]
+        assert params["n_estimators"] in {100, 200, 300}
+        assert 3 <= params["max_depth"] <= 7
+        assert 0.01 <= params["learning_rate"] <= 0.2
+
+
+def test_generate_doe_model_search_optuna_samples_dl_params_without_child_hpo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_fake_optuna(monkeypatch)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["dl_simple"]
+    spec["model_search"] = {
+        "dl_simple": {
+            "method": "optuna",
+            "n_trials": 2,
+            "seed": 13,
+            "params": {
+                "hidden_dim": {"type": "categorical", "choices": [64, 128]},
+                "dropout": {"type": "float", "low": 0.0, "high": 0.5, "step": 0.1},
+                "learning_rate": {"type": "float", "low": 0.0001, "high": 0.01, "log": True},
+                "batch_size": {"type": "categorical", "choices": [32, 64]},
+            },
+        }
+    }
+
+    result = generate_doe(spec)
+
+    assert result["summary"]["total_parent_cases"] == 2
+    for case in result["valid_cases"]:
+        config = yaml.safe_load(Path(case["config_path"]).read_text(encoding="utf-8"))
+        params = config["train"]["model"]["params"]
+        assert params["hidden_dim"] in {64, 128}
+        assert 0.0 <= params["dropout"] <= 0.5
+        assert 0.0001 <= params["learning_rate"] <= 0.01
+        assert params["batch_size"] in {32, 64}
+        assert config["train"]["tuning"] == {"method": "fixed"}
+
+
+def test_generate_doe_model_search_optuna_uses_real_optuna_package() -> None:
+    pytest.importorskip("optuna")
+
+    samples = doe_module._expand_model_search_for_model(
+        "random_forest",
+        {
+            "method": "optuna",
+            "n_trials": 2,
+            "seed": 42,
+            "params": {
+                "n_estimators": {"type": "int", "low": 10, "high": 30, "step": 10},
+                "max_depth": {"type": "categorical", "choices": [None, 4, 8]},
+            },
+        },
+    )
+
+    assert len(samples) == 2
+    assert len({json.dumps(sample, sort_keys=True) for sample in samples}) == 2
+    for sample in samples:
+        assert sample["train.model.params.n_estimators"] in {10, 20, 30}
+        assert sample["train.model.params.max_depth"] in {None, 4, 8}
+
+
+@pytest.mark.parametrize(
+    ("default_key", "default_value"),
+    [
+        ("train.tuning.method", "train_cv"),
+        ("train.tuning.method", "optuna"),
+        ("train.tuning.use_hpo", True),
+    ],
+)
+def test_generate_doe_rejects_child_level_tuning_defaults(
+    tmp_path: Path,
+    default_key: str,
+    default_value: object,
+) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["defaults"][default_key] = default_value
+
+    with pytest.raises(DOEGenerationError, match="Runtime child-level tuning setting"):
+        generate_doe(spec)
+
+
+@pytest.mark.parametrize(
+    "axis",
+    [
+        "train.tuning.method",
+        "train.tuning.hpo_trials",
+        "train_tdc.tuning.use_hpo",
+    ],
+)
+def test_generate_doe_rejects_child_level_tuning_search_axes(
+    tmp_path: Path,
+    axis: str,
+) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"][axis] = ["fixed"]
+
+    with pytest.raises(DOEGenerationError, match="Runtime child-level tuning axes"):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_invalid_specs_fail_clearly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_fake_optuna(monkeypatch)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "optuna",
+            "n_trials": 1,
+            "params": {
+                "n_estimators": {"type": "int", "low": 10},
+            },
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="missing required 'high'"):
+        generate_doe(spec)
+
+
+@pytest.mark.parametrize(
+    ("search_cfg", "match"),
+    [
+        (
+            {
+                "method": "optuna",
+                "n_trials": "abc",
+                "params": {"n_estimators": {"type": "int", "low": 10, "high": 20}},
+            },
+            r"model_search\.random_forest\.n_trials must be an integer",
+        ),
+        (
+            {
+                "method": "optuna",
+                "n_trials": 1,
+                "params": {"n_estimators": {"type": "int", "low": "abc", "high": 20}},
+            },
+            r"model_search\.random_forest\.params\.n_estimators\.low must be an integer",
+        ),
+        (
+            {
+                "method": "optuna",
+                "n_trials": 1,
+                "params": {
+                    "learning_rate": {
+                        "type": "float",
+                        "low": 0.01,
+                        "high": 0.1,
+                        "step": "abc",
+                    }
+                },
+            },
+            r"model_search\.random_forest\.params\.learning_rate\.step must be a number",
+        ),
+    ],
+)
+def test_generate_doe_model_search_invalid_numeric_specs_fail_clearly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    search_cfg: dict,
+    match: str,
+) -> None:
+    _patch_fake_optuna(monkeypatch)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {"random_forest": search_cfg}
+
+    with pytest.raises(DOEGenerationError, match=match):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_rejects_random_method_name(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "random",
+            "n_trials": 1,
+            "params": {"n_estimators": {"type": "int", "low": 10, "high": 20}},
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="method='random' is unsupported"):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_optuna_requires_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name == "optuna":
+            raise ImportError("blocked optuna import")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "optuna",
+            "n_trials": 1,
+            "params": {"n_estimators": {"type": "int", "low": 10, "high": 20}},
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="requires the optuna package"):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_rejects_unmatched_entries(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "randomforest": {
+            "method": "grid",
+            "params": {"n_estimators": [50, 100]},
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="did not match.*randomforest"):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_applies_to_profile_default_model(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"].pop("train.model.type")
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": {"n_estimators": [50, 100]},
+        }
+    }
+
+    result = generate_doe(spec)
+
+    assert result["summary"]["total_parent_cases"] == 2
+    configs = [
+        yaml.safe_load(Path(case["config_path"]).read_text(encoding="utf-8"))
+        for case in result["valid_cases"]
+    ]
+    assert [cfg["train"]["model"]["params"] for cfg in configs] == [
+        {"n_estimators": 50},
+        {"n_estimators": 100},
+    ]
+
+
+def test_generate_doe_model_search_rejects_tdc_profile(tmp_path: Path) -> None:
+    spec = {
+        "version": 1,
+        "dataset": {
+            "profile": "clf_tdc_benchmark",
+            "name": "pgp_tdc_benchmark",
+            "task_type": "classification",
+            "source": {
+                "type": "tdc",
+                "group": "ADMET_Group",
+                "name": "Pgp_Broccatelli",
+            },
+        },
+        "search_space": {"train_tdc.model.type": ["catboost_classifier"]},
+        "defaults": {"global.base_dir": str(tmp_path / "tdc_data")},
+        "output": {"dir": str(tmp_path / "tdc_generated")},
+        "model_search": {
+            "catboost_classifier": {
+                "method": "grid",
+                "params": {"depth": [4, 6]},
+            }
+        },
+    }
+
+    with pytest.raises(
+        DOEGenerationError,
+        match="train_tdc\\.model\\.params search is not supported",
+    ):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_respects_max_cases_after_expansion(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["constraints"] = {"max_cases": 1}
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": {"n_estimators": [50, 100]},
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="after model_search expansion"):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_rejects_search_space_param_conflict(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["search_space"]["train.model.params.n_estimators"] = [50]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": {"n_estimators": [100]},
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="must not redefine axes"):
+        generate_doe(spec)
+
+
+@pytest.mark.parametrize(
+    ("search_space_key", "model_search_params"),
+    [
+        ("train.model.params.optimizer.lr", {"optimizer": ["adam"]}),
+        ("train.model.params.optimizer", {"optimizer.lr": [0.001]}),
+    ],
+)
+def test_generate_doe_model_search_rejects_nested_param_conflicts(
+    tmp_path: Path,
+    search_space_key: str,
+    model_search_params: dict,
+) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["search_space"][search_space_key] = [0.01]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": model_search_params,
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="must not redefine axes"):
+        generate_doe(spec)
+
+
+def test_generate_doe_model_search_rejects_duplicate_grid_values(tmp_path: Path) -> None:
+    spec = _base_clf_doe(tmp_path)
+    spec["search_space"]["train.model.type"] = ["random_forest"]
+    spec["model_search"] = {
+        "random_forest": {
+            "method": "grid",
+            "params": {"n_estimators": [50, 50]},
+        }
+    }
+
+    with pytest.raises(DOEGenerationError, match="duplicate grid values"):
+        generate_doe(spec)
 
 
 def test_generate_doe_respects_explicit_cv_execution_axes_in_defaults(tmp_path: Path) -> None:

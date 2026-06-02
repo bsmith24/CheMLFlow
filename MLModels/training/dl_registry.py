@@ -218,15 +218,13 @@ def build_dl_search_config(
 # Time-series DL search configs
 # ---------------------------------------------------------------------------
 #
-# The tabular DL search above is reached via `MLModels.training.torch_models.
-# run_optuna`, which assumes (input_dim -> 1) regression on a tabular X, y.
 # Time-series models — Adaptive NVAR and Connectome NVAR — train differently
-# (Adam->L-BFGS on residual targets, scored by autoregressive rollout), so
-# they get a parallel entry point. The search space dict format is identical
-# to the tabular one (`type` in {"categorical","float","int"}, etc.), and the
-# time-series trainer's Optuna driver translates each spec to the same
-# trial.suggest_* call. Keeping the format identical lets users reason about
-# search spaces uniformly across all dl_* models.
+# from tabular DL models (Adam->L-BFGS on residual targets, scored by
+# autoregressive rollout), so their recommended DOE model_search spaces live in
+# separate registry entries. The search space dict format is identical to the
+# DOE `model_search.method: optuna` syntax (`type` in {"categorical", "float",
+# "int"}, etc.), which lets users reason about search spaces uniformly across
+# dl_* models.
 #
 # Each architecture gets its own registry entry so that:
 #   1. Adaptive NVAR (MLP feature block) and Connectome NVAR (fixed-graph
@@ -250,9 +248,9 @@ def build_timeseries_dl_search_config(
         The same DLSearchConfig dataclass used by the tabular path. We pass a
         placeholder model_class because building an actual nn.Module requires
         runtime data (delay-embedding dimension `dk = d * k`, connectome
-        adjacency, etc.) that only exists inside the trainer. The time-series
-        Optuna driver constructs models directly from sampled params rather
-        than going through `config.model_class`.
+        adjacency, etc.) that only exists inside the trainer. DOE model_search
+        should use the search_space/default_params values to emit fixed runtime
+        configs before the trainer is called.
 
     Returns
     -------
@@ -265,9 +263,8 @@ def build_timeseries_dl_search_config(
     def _unused_model_class(params: dict[str, Any]):  # pragma: no cover - placeholder
         raise RuntimeError(
             "Time-series DL search configs do not build models via "
-            "config.model_class; the time-series trainer constructs models "
-            "directly from sampled hyperparameters. See "
-            "MLModels.training.timeseries_nvar.run_optuna_timeseries."
+            "config.model_class; DOE model_search emits fixed hyperparameters "
+            "and the time-series trainer constructs models from runtime params."
         )
 
     if model_type == "dl_adaptive_nvar":
@@ -316,7 +313,6 @@ def build_timeseries_dl_search_config(
                 "dataset_noise_scale": 0.0,
                 "horizons": [25, 50, 75, 100],
                 "num_windows": 10,
-                "optuna_num_runs": 5,
             },
         )
 

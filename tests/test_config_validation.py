@@ -73,6 +73,58 @@ def test_strict_requires_train_model_type() -> None:
         validate_config_strict(cfg, ["train"])
 
 
+@pytest.mark.parametrize(
+    ("tuning_cfg", "path"),
+    [
+        ({"method": "train_cv"}, "train.tuning.method"),
+        ({"use_hpo": True}, "train.tuning.use_hpo"),
+    ],
+)
+def test_strict_rejects_child_level_train_hpo(tuning_cfg: dict, path: str) -> None:
+    cfg = _base_config(["train"])
+    cfg["train"] = {"model": {"type": "random_forest"}, "tuning": tuning_cfg}
+
+    issues = collect_config_issues(cfg, ["train"])
+
+    assert any(
+        issue.code == "CFG_CHILD_LEVEL_HPO_UNSUPPORTED" and issue.path == path
+        for issue in issues
+    )
+
+
+def test_strict_rejects_child_level_timeseries_optuna() -> None:
+    cfg = _base_config(["train.timeseries"])
+    cfg["train"] = {
+        "model": {"type": "dl_adaptive_nvar"},
+        "tuning": {"method": "optuna"},
+    }
+    cfg["split"] = {"warmup_len": 5, "train_len": 30, "val_len": 20, "test_len": 20}
+
+    issues = collect_config_issues(cfg, ["train.timeseries"])
+
+    assert any(
+        issue.code == "CFG_CHILD_LEVEL_HPO_UNSUPPORTED"
+        and issue.path == "train.tuning.method"
+        for issue in issues
+    )
+
+
+def test_strict_rejects_child_level_tdc_hpo() -> None:
+    cfg = _base_config(["train.tdc"])
+    cfg["train_tdc"] = {
+        "model": {"type": "catboost_classifier"},
+        "tuning": {"use_hpo": True},
+    }
+
+    issues = collect_config_issues(cfg, ["train.tdc"])
+
+    assert any(
+        issue.code == "CFG_CHILD_LEVEL_HPO_UNSUPPORTED"
+        and issue.path == "train_tdc.tuning.use_hpo"
+        for issue in issues
+    )
+
+
 def test_strict_rejects_legacy_preprocess_keys() -> None:
     cfg = _base_config(["preprocess.features"])
     cfg["preprocess"] = {"keep_all_columns": True, "exclude_columns": ["A"]}

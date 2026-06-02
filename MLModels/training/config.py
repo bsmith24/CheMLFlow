@@ -78,6 +78,11 @@ def parse_runtime_training_options(model_config: dict[str, Any] | None) -> Runti
     debug_logging = as_bool(normalized.get("_debug_logging", False))
     n_jobs = resolve_n_jobs(normalized)
     tuning_cfg = normalized.get("tuning", {}) if isinstance(normalized.get("tuning"), dict) else {}
+    if as_bool(tuning_cfg.get("use_hpo", False)) or as_bool(normalized.get("use_hpo", False)):
+        raise ValueError(
+            "Runtime child-level HPO is disabled. Use DOE model_search to create "
+            "parent-level fixed hyperparameter cases that fan out across CV folds."
+        )
     tuning_method = str(
         tuning_cfg.get(
             "method",

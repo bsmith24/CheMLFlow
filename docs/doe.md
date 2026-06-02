@@ -106,6 +106,7 @@ Top-level keys:
 - `dataset`: fixed facts about the data
 - `defaults`: fixed runtime settings applied to every case
 - `search_space`: experiment axes to vary
+- `model_search`: optional model-scoped parent-level hyperparameter expansion
 - `constraints`: generation and artifact-safety settings
 - `selection`: metric preference metadata
 - `output`: generated artifact location
@@ -147,12 +148,78 @@ output:
 `search_space` and `defaults` use dotted paths. Scalar values are treated as
 single-value axes; lists expand into a grid.
 
+## Model Search
+
+Use `model_search` when a broad DOE should also expand model-specific
+hyperparameter candidates. Each resolved hyperparameter point becomes a parent
+case; CV fold/repeat executions remain children under that parent. Generated
+runtime YAMLs contain concrete `train.model.params` values, not unresolved search
+definitions.
+
+```yaml
+search_space:
+  train.model.type: [random_forest, dl_simple, chemprop]
+  split.strategy: [random, scaffold]
+  pipeline.feature_input: [featurize.rdkit, smiles_native]
+
+model_search:
+  random_forest:
+    method: grid
+    params:
+      n_estimators: [100, 300, 500]
+      max_depth: [10, 20, null]
+
+  dl_simple:
+    method: optuna
+    n_trials: 25
+    seed: 42
+    params:
+      hidden_dim: {type: categorical, choices: [64, 128, 256]}
+      dropout: {type: float, low: 0.0, high: 0.5}
+      learning_rate: {type: float, low: 0.01, high: 0.2, log: true}
+      batch_size: {type: categorical, choices: [32, 64, 128]}
+
+  chemprop:
+    method: optuna
+    n_trials: 12
+    seed: 42
+    params:
+      max_epochs: {type: categorical, choices: [20, 40]}
+      batch_size: {type: categorical, choices: [32, 64]}
+      max_lr: {type: float, low: 0.0005, high: 0.003, log: true}
+      mp_hidden_dim: {type: categorical, choices: [128, 300]}
+      ffn_hidden_dim: {type: categorical, choices: [128, 300]}
+      mp_depth: {type: categorical, choices: [2, 3]}
+```
+
+`model_search.<model_type>` applies only to matching `train.model.type` cases,
+including the profile's default model when `train.model.type` is omitted.
+Unmatched `model_search` keys are rejected so typos cannot silently drop a
+hyperparameter search. `model_search` currently targets the standard
+`train.model.params` path; `train_tdc.model.params` search is not supported.
+
+`method: grid` creates the full cartesian product. `method: optuna` converts the
+YAML distribution specs into Optuna distributions and asks an Optuna study for
+`n_trials` concrete parent candidates at DOE-generation time; each sampled point
+becomes a fixed scientific parent before CV fold/repeat fanout. In 5-fold CV,
+`n_trials: 12` creates 12 scientific parents and 60 execution children for that
+matching model branch. The `optuna` Python package is required for this method.
+
+This is parent-level batch trial generation. A static `generate_doe.py` call
+does not adapt later trials from completed CV metrics; implementing metric-
+adaptive Optuna requires an execution loop that runs each parent, aggregates its
+CV metric, and reports the result back to Optuna. Runtime child-level tuning
+routes such as
+`train.tuning.method: train_cv`, time-series `train.tuning.method: optuna`, and
+`train.tuning.use_hpo: true` are disabled; generated children should run fixed
+concrete `train.model.params`.
+
 ## Generated Artifacts
 
 DOE generation writes these files into `output.dir`:
 
-- `summary.json`: counts, profile/task, selection metadata, DOE spec hash,
-  snapshot path, and git provenance
+- `summary.json`: deterministic counts, profile/task, selection metadata, DOE
+  spec hash, snapshot path, and git provenance
 - `manifest.jsonl`: one row per attempted execution child, including skipped
   cases and issue codes
 - `parent_manifest.jsonl`: one row per scientific parent config
@@ -279,9 +346,9 @@ For chemistry model comparison, prefer `split.mode: cv` with
 `split.strategy: scaffold`. Scaffold CV requires a usable SMILES column that can
 produce `canonical_smiles` in curated data.
 
-Separate hyperparameter search from evaluation design.
-`train.tuning.method: train_cv` is inner tuning; `split.mode: cv` or
-`nested_holdout_cv` is the outer evaluation design.
+Keep runtime child configs fixed. `split.mode: cv` or `nested_holdout_cv`
+defines the evaluation fanout; `model_search` defines hyperparameter candidates
+as fixed scientific parents that fan out across the same CV folds.
 
 Run a small pilot before the full DOE. Confirm metrics files, split metadata,
 runtime, and memory behavior before spending the full compute budget.

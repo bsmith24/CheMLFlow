@@ -354,8 +354,8 @@ Notes:
 In `config/*.yaml`:
 - `train.model.type`: model selection
 - `train.model.params`: model hyperparameters
-- `train.tuning.method`: `fixed` (default; fit once with `train.model.params`) or `train_cv` (sklearn inner CV search)
-- `train.tuning.cv_folds`, `train.tuning.search_iters`: sklearn search effort when `train_cv`
+- `train.tuning.method`: `fixed` (default; fit once with `train.model.params`)
+- Hyperparameter search belongs in DOE `model_search`, where each candidate is a parent case evaluated across the same child folds
 - `train.reporting.plot_split_performance`: optional bool; when true, saves split metrics/plots in run output
 - `train.model.foundation*`: Chemprop foundation settings (`foundation`, `foundation_checkpoint`, `freeze_encoder`)
 - `train.features.exclude_columns`: optional list of feature columns to remove before modeling

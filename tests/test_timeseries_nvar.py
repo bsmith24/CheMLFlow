@@ -152,69 +152,40 @@ def test_train_timeseries_nvar_rejects_wrong_model_type(tmp_path):
         )
 
 
-def test_train_timeseries_optuna_runs_and_writes_artifacts(tmp_path):
-    """tuning.method=optuna runs the search, picks a winner, retrains, writes artifacts."""
-    pytest.importorskip("optuna")
+def test_train_timeseries_rejects_child_level_optuna(tmp_path):
+    """tuning.method=optuna is rejected; parent-level DOE model_search owns HPO."""
     from MLModels.training import timeseries_nvar
 
-    series = _make_synthetic_series(T=300, d=1, seed=0)
+    series = _make_synthetic_series(T=80, d=1, seed=0)
     raw_path = tmp_path / "raw.npz"
     timeseries_io.save_raw_timeseries(str(raw_path), series)
 
     output_dir = tmp_path / "run"
     output_dir.mkdir()
 
-    # 3 trials, all with tiny epoch budgets, so the test still finishes quickly.
     model_params = {
-        # Searched axes (k, hidden_dim, lr_adam, lr_lbfgs) come from the
-        # registry's search space. We just pin the non-searched knobs.
-        "max_epochs_adam": 3,
-        "adam_patience": 2,
-        "num_epochs_lbfgs": 3,
-        "lbfgs_patience": 2,
-        "lbfgs_max_iter": 4,
-        "lbfgs_history_size": 4,
-        "train_noise_scale": 0.0,
-        "dataset_noise_scale": 0.0,
-        "num_windows": 2,
-        "horizons": [5, 10],
-        "weight_decay": 0.0,
+        "k": 2,
+        "hidden_dim": 8,
+        "horizons": [5],
+        "num_windows": 1,
     }
-    train_block = {
-        "tuning": {
-            "method": "optuna",
-            "n_trials": 3,
-            "trial_epoch_cap": 3,
-        }
-    }
-    split_block = {"warmup_len": 30, "train_len": 150, "val_len": 60, "test_len": 60}
+    train_block = {"tuning": {"method": "optuna", "n_trials": 3}}
+    split_block = {"warmup_len": 5, "train_len": 30, "val_len": 20, "test_len": 20}
 
-    result = timeseries_nvar.train_timeseries_nvar(
-        model_type="dl_adaptive_nvar",
-        raw_path=str(raw_path),
-        output_dir=str(output_dir),
-        model_params=model_params,
-        train_block=train_block,
-        split_block=split_block,
-        global_random_state=0,
-    )
-
-    payload = json.loads(open(result.metrics_path).read())
-    assert "tuning" in payload, "metrics.json must record Optuna summary when method=optuna"
-    tuning = payload["tuning"]
-    assert tuning["method"] == "optuna"
-    assert tuning["n_trials_requested"] == 3
-    assert tuning["n_trials_completed"] >= 1
-    assert "best_params" in tuning and isinstance(tuning["best_params"], dict)
-    assert set(tuning["best_params"]).issubset({"k", "hidden_dim", "lr_adam", "lr_lbfgs"})
-    # The final retrain used best_params merged with user-supplied fixed knobs.
-    cfg_snapshot = payload["config"]
-    assert cfg_snapshot["k"] == tuning["best_params"]["k"]
-    assert cfg_snapshot["hidden_dim"] == tuning["best_params"]["hidden_dim"]
+    with pytest.raises(ValueError, match="DOE model_search"):
+        timeseries_nvar.train_timeseries_nvar(
+            model_type="dl_adaptive_nvar",
+            raw_path=str(raw_path),
+            output_dir=str(output_dir),
+            model_params=model_params,
+            train_block=train_block,
+            split_block=split_block,
+            global_random_state=0,
+        )
 
 
 # ---------------------------------------------------------------------------
-# v6 additions: GPU strictness, all-categorical Optuna, repeated-final UX
+# v6 additions: GPU strictness, all-categorical parent search, repeated-final UX
 # ---------------------------------------------------------------------------
 
 

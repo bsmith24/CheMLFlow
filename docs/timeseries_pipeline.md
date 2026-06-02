@@ -93,10 +93,10 @@ train:
 Two DOE specs ship with this branch:
 
 ```bash
-# AdaptiveNVAR sweep (mirrors notebook 2's Optuna grid)
+# AdaptiveNVAR sweep (parent-level Optuna model_search)
 python scripts/generate_doe.py --doe config/doe_timeseries.yaml
 
-# ConnectomeNVAR sweep (mirrors notebook 1's Optuna grid + connectome_mode axis)
+# ConnectomeNVAR sweep (parent-level Optuna model_search + connectome axes)
 python scripts/generate_doe.py --doe config/doe_timeseries_connectome.yaml
 ```
 
@@ -133,9 +133,7 @@ split:                              # time-series segment lengths
 
 train:
   tuning:
-    method: fixed                   # or `optuna` to run an in-loop search
-    n_trials: 30                    # only used when method=optuna
-    trial_epoch_cap: 500            # cap Adam+L-BFGS epochs per trial
+    method: fixed                   # runtime child-level HPO is disabled
   model:
     type: dl_adaptive_nvar          # or dl_connectome_nvar
     params:
@@ -151,14 +149,11 @@ train:
       dataset_noise_scale: 0.0
 ```
 
-When `tuning.method == "optuna"`, the searched axes (k, hidden_dim,
-lr_adam, lr_lbfgs for AdaptiveNVAR; k, n_connectome, input_scaling,
-lr_adam, lr_lbfgs, weight_decay for ConnectomeNVAR) come from
-`MLModels.training.dl_registry.build_timeseries_dl_search_config(...)`,
-not from the YAML. Any value the user sets in `train.model.params` for a
-searched axis is overridden by Optuna's choice. To change what's searched,
-edit `dl_registry.py`; to vary scientific factors across experiments, use
-the DOE.
+Runtime `tuning.method: optuna` is disabled. To compare searched axes such as
+k, hidden_dim, lr_adam, lr_lbfgs, n_connectome, input_scaling, or weight_decay,
+define them under DOE `model_search.method: optuna`. DOE generation writes each
+Optuna parent trial as concrete `train.model.params` before child execution
+fanout.
 
 The full parameter list is documented in
 `MLModels/training/timeseries_nvar.py::TrainingConfig`.

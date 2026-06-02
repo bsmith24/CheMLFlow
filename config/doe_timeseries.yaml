@@ -3,9 +3,8 @@
 #
 # DOE cases here are SCIENTIFICALLY DISTINCT EXPERIMENTS (different
 # measurement-noise levels, different training-time noise levels, etc.).
-# Hyperparameter search (k, hidden_dim, lr_adam, lr_lbfgs) happens
-# INSIDE each case via Optuna, with the search space defined in
-# MLModels.training.dl_registry.build_timeseries_dl_search_config.
+# Hyperparameter candidates (k, hidden_dim, lr_adam, lr_lbfgs) are expanded
+# as DOE parent cases via model_search. Runtime child configs stay fixed.
 #
 # Generate concrete case configs:
 #   python scripts/generate_doe.py --doe config/doe_timeseries.yaml
@@ -30,18 +29,13 @@ defaults:
   global.random_state: 2025
   global.base_dir: artifacts/data/doe_timeseries
   pipeline.feature_input: none
-  train.tuning.method: optuna           # each case runs its own Optuna search
-  train.tuning.n_trials: 80             # 30 trials per case (tune for budget)
-  train.tuning.trial_epoch_cap: null     # cap Adam + L-BFGS epochs per trial;
-                                        # the final retrain (after search)
-                                        # uses the full budget below.
+  train.tuning.method: fixed
   train.model.type: dl_adaptive_nvar
-  # Reasonable defaults; the Optuna search will override the searched axes
+  # Reasonable defaults; model_search emits concrete values for searched axes
   # (k, hidden_dim, lr_adam, lr_lbfgs).
   train.model.params.weight_decay: 0.0
   train.model.params.num_windows: 10
   train.model.params.horizons: [25, 50, 75, 100]
-  train.model.params.optuna_num_runs: 5      # notebook uses num_runs=5 inside Optuna validation
   train.model.params.test_num_runs: 25       # final independent test trainings; report mean ± std
   train.model.params.adam_patience: 200
   train.model.params.lbfgs_patience: 200
@@ -61,6 +55,17 @@ search_space:
   train.model.params.dataset_noise_scale: [0.2, 0.3]
   # train.model.params.train_noise_scale: [0.0, 0.05]
   train.model.params.train_noise_scale: [0.0]
+
+model_search:
+  dl_adaptive_nvar:
+    method: optuna
+    n_trials: 80
+    seed: 2025
+    params:
+      k: {type: categorical, choices: [2, 10, 30, 50]}
+      hidden_dim: {type: categorical, choices: [10, 20, 50, 100, 200, 500, 1000]}
+      lr_adam: {type: categorical, choices: [1.0e-4, 1.0e-3, 1.0e-2]}
+      lr_lbfgs: {type: categorical, choices: [1.0, 0.5, 0.1]}
 
 selection:
   max_cases: null
