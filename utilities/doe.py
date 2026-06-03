@@ -1379,6 +1379,18 @@ def _build_case_config(
                 get_data_cfg["source"]["has_header"] = bool(source_cfg.get("has_header"))
             if source_cfg.get("time_column") is not None:
                 get_data_cfg["source"]["time_column"] = source_cfg.get("time_column")
+        dataset_sample = dataset_cfg.get("sample")
+        if isinstance(dataset_sample, dict):
+            get_data_cfg["sample"] = dict(dataset_sample)
+        elif dataset_sample is not None:
+            get_data_cfg["sample"] = dataset_sample
+        sample_overrides = _extract_prefixed(merged, "get_data.sample.")
+        if sample_overrides:
+            sample_cfg = get_data_cfg.get("sample", {})
+            if not isinstance(sample_cfg, dict):
+                sample_cfg = {}
+            sample_cfg.update(sample_overrides)
+            get_data_cfg["sample"] = sample_cfg
         if "get_data.max_rows" in merged:
             get_data_cfg["max_rows"] = int(merged["get_data.max_rows"])
         config["get_data"] = get_data_cfg

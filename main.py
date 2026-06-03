@@ -77,6 +77,7 @@ def build_paths(base_dir: str) -> dict[str, str]:
     return {
         "raw": os.path.join(base_dir, "raw.csv"),
         "raw_sample": os.path.join(base_dir, "raw_sample.csv"),
+        "raw_sample_meta": os.path.join(base_dir, "raw_sample.meta.json"),
         "preprocessed": os.path.join(base_dir, "preprocessed.csv"),
         "curated": os.path.join(base_dir, "curated.csv"),
         "curated_labeled": os.path.join(base_dir, "curated_labeled.csv"),
@@ -117,6 +118,248 @@ def sample_csv(input_path: str, output_path: str, max_rows: int) -> None:
             writer.writerow(row)
             if idx >= max_rows:
                 break
+
+
+_DATASET_SAMPLE_STRATEGIES = {"random", "stratified"}
+_DATASET_SAMPLE_KEYS = {"fraction", "seed", "strategy", "stratify_column"}
+
+
+def _sample_row_count(total_rows: int, fraction: float) -> int:
+    if total_rows <= 0:
+        return 0
+    return min(total_rows, max(1, int(total_rows * fraction + 0.5)))
+
+
+def _resolve_sample_fraction(value: object) -> float:
+    if isinstance(value, bool):
+        raise ValueError("get_data.sample.fraction must be a number in the interval (0, 1].")
+    try:
+        fraction = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("get_data.sample.fraction must be a number in the interval (0, 1].") from exc
+    if not 0 < fraction <= 1:
+        raise ValueError("get_data.sample.fraction must be a number in the interval (0, 1].")
+    return fraction
+
+
+def _resolve_sample_seed(value: object, *, default_seed: int) -> int:
+    if value is None:
+        return int(default_seed)
+    if isinstance(value, bool):
+        raise ValueError("get_data.sample.seed must be an integer.")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise ValueError("get_data.sample.seed must be an integer.")
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text.lstrip("+-").isdigit():
+            return int(text)
+    raise ValueError("get_data.sample.seed must be an integer.")
+
+
+def _resolve_sample_strategy(value: object) -> str:
+    strategy = str(value or "random").strip().lower()
+    if strategy not in _DATASET_SAMPLE_STRATEGIES:
+        allowed = ", ".join(sorted(_DATASET_SAMPLE_STRATEGIES))
+        raise ValueError(f"get_data.sample.strategy must be one of: {allowed}.")
+    return strategy
+
+
+def _random_sample_frame(df: pd.DataFrame, *, fraction: float, seed: int) -> pd.DataFrame:
+    sample_size = _sample_row_count(len(df), fraction)
+    if sample_size == len(df):
+        return df.copy()
+    return df.sample(n=sample_size, random_state=seed).sort_index()
+
+
+def _allocate_stratified_counts(group_sizes: list[int], desired_count: int) -> list[int]:
+    total_rows = sum(group_sizes)
+    if total_rows <= 0 or desired_count <= 0:
+        return [0 for _ in group_sizes]
+    desired_count = min(total_rows, desired_count)
+    nonempty_group_count = sum(1 for size in group_sizes if size > 0)
+    if desired_count == total_rows:
+        return list(group_sizes)
+    if desired_count < nonempty_group_count:
+        return [1 if size > 0 else 0 for size in group_sizes]
+
+    quotas = [size * desired_count / total_rows for size in group_sizes]
+    counts = [
+        min(size, max(1, int(quota)))
+        if size > 0
+        else 0
+        for size, quota in zip(group_sizes, quotas)
+    ]
+    while sum(counts) > desired_count:
+        candidates = [idx for idx, count in enumerate(counts) if count > 1]
+        if not candidates:
+            break
+        idx = max(candidates, key=lambda candidate: (counts[candidate] - quotas[candidate], counts[candidate]))
+        counts[idx] -= 1
+    while sum(counts) < desired_count:
+        candidates = [idx for idx, (count, size) in enumerate(zip(counts, group_sizes)) if count < size]
+        if not candidates:
+            break
+        idx = max(candidates, key=lambda candidate: (quotas[candidate] - counts[candidate], group_sizes[candidate]))
+        counts[idx] += 1
+    return counts
+
+
+def _stratified_sample_frame(
+    df: pd.DataFrame,
+    *,
+    fraction: float,
+    seed: int,
+    stratify_column: str,
+) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    rng = np.random.default_rng(seed)
+    sampled_groups = []
+    groups = [group for _, group in df.groupby(stratify_column, sort=False, dropna=False)]
+    desired_count = _sample_row_count(len(df), fraction)
+    group_sizes = [len(group) for group in groups]
+    group_sample_sizes = _allocate_stratified_counts(group_sizes, desired_count)
+    if sum(group_sample_sizes) > desired_count:
+        logging.warning(
+            "get_data.sample.strategy=stratified requested %d rows but found %d classes; "
+            "sampling one row per class (%d rows total).",
+            desired_count,
+            len(groups),
+            sum(group_sample_sizes),
+        )
+    for group, sample_size in zip(groups, group_sample_sizes):
+        if sample_size <= 0:
+            continue
+        if sample_size == len(group):
+            sampled_groups.append(group.copy())
+            continue
+        group_seed = int(rng.integers(0, 2**32 - 1))
+        sampled_groups.append(group.sample(n=sample_size, random_state=group_seed))
+    if not sampled_groups:
+        return df.iloc[0:0].copy()
+    return pd.concat(sampled_groups).sort_index()
+
+
+def _stringify_sample_group(value: object) -> str:
+    if pd.isna(value):
+        return "<NA>"
+    return str(value)
+
+
+def _sample_group_counts(df: pd.DataFrame, column: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if column not in df.columns:
+        return counts
+    for value, count in df.groupby(column, sort=False, dropna=False).size().items():
+        key = _stringify_sample_group(value)
+        counts[key] = counts.get(key, 0) + int(count)
+    return counts
+
+
+def _resolve_sample_stratify_column(context: dict, sample_config: dict) -> str:
+    candidates = [
+        sample_config.get("stratify_column"),
+        (context.get("label_config") or {}).get("source_column")
+        if isinstance(context.get("label_config"), dict)
+        else None,
+        (context.get("curate_config") or {}).get("label_column")
+        if isinstance(context.get("curate_config"), dict)
+        else None,
+        context.get("target_column"),
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _apply_raw_dataset_sample(context: dict, raw_data_file: str) -> str:
+    get_data_config = context.get("get_data_config", {})
+    sample_config = get_data_config.get("sample") if isinstance(get_data_config, dict) else None
+    if sample_config is None:
+        return raw_data_file
+    if not isinstance(sample_config, dict):
+        raise ValueError("get_data.sample must be a mapping with fraction, seed, and strategy fields.")
+    unknown_keys = sorted(set(sample_config) - _DATASET_SAMPLE_KEYS)
+    if unknown_keys:
+        raise ValueError(
+            "get_data.sample contains unknown key(s): " + ", ".join(unknown_keys)
+        )
+
+    fraction = _resolve_sample_fraction(sample_config.get("fraction"))
+    seed = _resolve_sample_seed(
+        sample_config.get("seed"),
+        default_seed=int(context.get("global_random_state", 42)),
+    )
+    requested_strategy = _resolve_sample_strategy(sample_config.get("strategy"))
+    effective_strategy = requested_strategy
+    target_column = str(context.get("target_column", "")).strip()
+    stratify_column = _resolve_sample_stratify_column(context, sample_config)
+    task_type = str(context.get("task_type", "regression")).strip().lower()
+    df = pd.read_csv(raw_data_file)
+
+    if requested_strategy == "stratified":
+        if task_type != "classification":
+            logging.warning(
+                "get_data.sample.strategy=stratified is only class-stratified for "
+                "classification; falling back to random sampling for task_type=%r.",
+                task_type,
+            )
+            effective_strategy = "random"
+        elif stratify_column not in df.columns:
+            logging.warning(
+                "get_data.sample.strategy=stratified requested target column %r, "
+                "but it is missing from the raw dataset; falling back to random sampling.",
+                stratify_column,
+            )
+            effective_strategy = "random"
+
+    if effective_strategy == "stratified":
+        sampled_df = _stratified_sample_frame(
+            df,
+            fraction=fraction,
+            seed=seed,
+            stratify_column=stratify_column,
+        )
+    else:
+        sampled_df = _random_sample_frame(df, fraction=fraction, seed=seed)
+
+    sampled_path = context["paths"]["raw_sample"]
+    sampled_df.to_csv(sampled_path, index=False)
+    metadata = {
+        "source_path": raw_data_file,
+        "sampled_path": sampled_path,
+        "source_rows": int(len(df)),
+        "sampled_rows": int(len(sampled_df)),
+        "fraction": fraction,
+        "seed": seed,
+        "strategy": requested_strategy,
+        "effective_strategy": effective_strategy,
+        "task_type": task_type,
+        "target_column": target_column,
+        "stratify_column": stratify_column if effective_strategy == "stratified" else None,
+        "actual_fraction": float(len(sampled_df) / len(df)) if len(df) else 0.0,
+    }
+    if effective_strategy == "stratified" and stratify_column in df.columns:
+        metadata["source_strata_counts"] = _sample_group_counts(df, stratify_column)
+        metadata["sampled_strata_counts"] = _sample_group_counts(sampled_df, stratify_column)
+    metadata_path = context["paths"].get("raw_sample_meta", f"{sampled_path}.meta.json")
+    _write_json_atomic(metadata_path, metadata)
+    context["raw_sample_metadata"] = metadata
+    logging.info(
+        "Applied dataset sample: %d/%d rows using %s strategy (fraction=%s, seed=%s).",
+        len(sampled_df),
+        len(df),
+        effective_strategy,
+        fraction,
+        seed,
+    )
+    return sampled_path
 
 
 def resolve_run_dir(config: dict) -> str:
@@ -432,6 +675,11 @@ def run_node_get_data(context: dict) -> None:
     output_file = context["paths"]["raw"]
     _run_subprocess([sys.executable, script_path, output_file, "--config", context["config_path"]])
     validate_contract(bind_output_path(GET_DATA_OUTPUT_CONTRACT, output_file), warn_only=True)
+    sampled_file = _apply_raw_dataset_sample(context, output_file)
+    if sampled_file != output_file:
+        context["paths"]["raw_full"] = output_file
+        context["paths"]["raw"] = sampled_file
+        validate_contract(bind_output_path(GET_DATA_OUTPUT_CONTRACT, sampled_file), warn_only=True)
 
 
 def run_node_curate(context: dict) -> None:
@@ -442,7 +690,7 @@ def run_node_curate(context: dict) -> None:
     raw_data_file = context["paths"]["raw"]
     pipeline_type = context["pipeline_type"]
     get_data_config = context.get("get_data_config", {})
-    if pipeline_type == "qm9":
+    if pipeline_type == "qm9" and isinstance(get_data_config, dict) and "sample" not in get_data_config:
         max_rows = get_data_config.get("max_rows")
         if max_rows:
             sampled_path = context["paths"]["raw_sample"]

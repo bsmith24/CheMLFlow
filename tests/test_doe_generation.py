@@ -204,6 +204,55 @@ def test_generate_doe_skips_invalid_model_task_combos(tmp_path: Path) -> None:
     assert Path(result["valid_cases"][0]["config_path"]).exists()
 
 
+def test_generate_doe_copies_dataset_sample_to_get_data(tmp_path: Path) -> None:
+    spec = {
+        "version": 1,
+        "dataset": {
+            "profile": "reg_local_csv",
+            "name": "flash_sampled_reg_doe",
+            "task_type": "regression",
+            "target_column": "FP Exp.",
+            "source": {"type": "local_csv", "path": _flash_dataset_path()},
+            "smiles_column": "SMILES",
+            "sample": {"fraction": 0.1, "seed": 42, "strategy": "random"},
+            "curate": {
+                "properties": "FP Calc.",
+                "smiles_column": "SMILES",
+                "dedupe_strategy": "first",
+                "keep_all_columns": True,
+            },
+        },
+        "search_space": {
+            "split.mode": ["holdout"],
+            "split.strategy": ["random"],
+            "pipeline.feature_input": ["featurize.none"],
+            "pipeline.preprocess": [False],
+            "pipeline.select": [False],
+            "pipeline.explain": [False],
+            "train.model.type": ["random_forest"],
+        },
+        "defaults": {
+            "global.base_dir": str(tmp_path / "data"),
+            "global.runs.enabled": False,
+            "global.random_state": 42,
+            "split.test_size": 0.2,
+            "split.val_size": 0.1,
+            "split.stratify": False,
+            "train.tuning.method": "fixed",
+        },
+        "output": {"dir": str(tmp_path / "generated")},
+    }
+
+    result = generate_doe(spec)
+    generated_config = yaml.safe_load(Path(result["valid_cases"][0]["config_path"]).read_text())
+
+    assert generated_config["get_data"]["sample"] == {
+        "fraction": 0.1,
+        "seed": 42,
+        "strategy": "random",
+    }
+
+
 def test_generate_doe_allows_tree_models_for_classification(tmp_path: Path) -> None:
     spec = _base_clf_doe(tmp_path)
     spec["search_space"]["train.model.type"] = [

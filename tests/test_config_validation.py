@@ -40,6 +40,99 @@ def test_strict_allows_analyze_block_for_analyze_node() -> None:
     validate_config_strict(cfg, ["get_data", "analyze.eda"])
 
 
+def test_strict_allows_valid_get_data_sample() -> None:
+    cfg = _base_config(["get_data"])
+    cfg["get_data"] = {
+        "data_source": "local_csv",
+        "source": {"path": "local_data/example.csv"},
+        "sample": {"fraction": 0.1, "seed": 42, "strategy": "random"},
+    }
+
+    validate_config_strict(cfg, ["get_data"])
+
+
+def test_strict_rejects_invalid_get_data_sample_fraction() -> None:
+    cfg = _base_config(["get_data"])
+    cfg["get_data"] = {
+        "data_source": "local_csv",
+        "source": {"path": "local_data/example.csv"},
+        "sample": {"fraction": 1.5, "seed": 42, "strategy": "random"},
+    }
+
+    issues = collect_config_issues(cfg, ["get_data"])
+
+    assert any(
+        issue.code == "CFG_GET_DATA_SAMPLE_INVALID"
+        and issue.path == "get_data.sample.fraction"
+        for issue in issues
+    )
+
+
+def test_strict_rejects_invalid_get_data_sample_strategy() -> None:
+    cfg = _base_config(["get_data"])
+    cfg["get_data"] = {
+        "data_source": "local_csv",
+        "source": {"path": "local_data/example.csv"},
+        "sample": {"fraction": 0.1, "seed": 42, "strategy": "quantile"},
+    }
+
+    issues = collect_config_issues(cfg, ["get_data"])
+
+    assert any(
+        issue.code == "CFG_GET_DATA_SAMPLE_INVALID"
+        and issue.path == "get_data.sample.strategy"
+        for issue in issues
+    )
+
+
+def test_strict_rejects_unknown_get_data_sample_key() -> None:
+    cfg = _base_config(["get_data"])
+    cfg["get_data"] = {
+        "data_source": "local_csv",
+        "source": {"path": "local_data/example.csv"},
+        "sample": {"fraction": 0.1, "seed": 42, "stratgey": "stratified"},
+    }
+
+    issues = collect_config_issues(cfg, ["get_data"])
+
+    assert any(
+        issue.code == "CFG_GET_DATA_SAMPLE_UNKNOWN_KEY"
+        and issue.path == "get_data.sample"
+        for issue in issues
+    )
+
+
+def test_strict_rejects_non_integral_get_data_sample_seed() -> None:
+    cfg = _base_config(["get_data"])
+    cfg["get_data"] = {
+        "data_source": "local_csv",
+        "source": {"path": "local_data/example.csv"},
+        "sample": {"fraction": 0.1, "seed": 42.9, "strategy": "random"},
+    }
+
+    issues = collect_config_issues(cfg, ["get_data"])
+
+    assert any(
+        issue.code == "CFG_GET_DATA_SAMPLE_INVALID"
+        and issue.path == "get_data.sample.seed"
+        for issue in issues
+    )
+
+
+def test_strict_rejects_get_data_sample_with_max_rows() -> None:
+    cfg = _base_config(["get_data"])
+    cfg["get_data"] = {
+        "data_source": "local_csv",
+        "source": {"path": "local_data/example.csv"},
+        "max_rows": 100,
+        "sample": {"fraction": 0.1, "seed": 42, "strategy": "random"},
+    }
+
+    issues = collect_config_issues(cfg, ["get_data"])
+
+    assert any(issue.code == "CFG_GET_DATA_SAMPLE_CONFLICT" for issue in issues)
+
+
 def test_strict_rejects_block_not_in_pipeline() -> None:
     cfg = _base_config(["train"])
     cfg["train"] = {"model": {"type": "decision_tree"}}

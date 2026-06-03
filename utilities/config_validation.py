@@ -80,6 +80,9 @@ _FEATURE_INPUT_ALIASES = {
 _CLASSIFICATION_ONLY_MODELS = {"catboost_classifier"}
 _DL_WILDCARD = "dl_*"
 _ARTIFACT_RETENTION_VALUES = {"full", "audit_light"}
+_GET_DATA_SAMPLE_STRATEGIES = {"random", "stratified"}
+_GET_DATA_SAMPLE_SOURCE_TYPES = {"local_csv", "chembl", "http_csv"}
+_GET_DATA_SAMPLE_KEYS = {"fraction", "seed", "strategy", "stratify_column"}
 _RUNTIME_PROFILE_CONTRACTS: dict[str, dict[str, Any]] = {
     "reg_local_csv": {
         "allowed_feature_inputs": (
@@ -218,6 +221,114 @@ def _append_child_level_tuning_issues(
         issues.append(_runtime_child_tuning_issue(f"{path_prefix}.method", method))
     if _is_truthy(tuning_cfg.get("use_hpo", False)):
         issues.append(_runtime_child_tuning_issue(f"{path_prefix}.use_hpo", tuning_cfg.get("use_hpo")))
+
+
+def _append_get_data_sample_issues(
+    issues: list[ValidationIssue],
+    get_data_cfg: dict[str, Any],
+    source_type: str,
+) -> None:
+    sample_cfg = get_data_cfg.get("sample")
+    if sample_cfg is None:
+        return
+    if "max_rows" in get_data_cfg:
+        issues.append(
+            ValidationIssue(
+                code="CFG_GET_DATA_SAMPLE_CONFLICT",
+                path="get_data.sample",
+                message="get_data.sample cannot be combined with get_data.max_rows.",
+            )
+        )
+    if source_type and source_type not in _GET_DATA_SAMPLE_SOURCE_TYPES:
+        issues.append(
+            ValidationIssue(
+                code="CFG_GET_DATA_SAMPLE_UNSUPPORTED_SOURCE",
+                path="get_data.sample",
+                message=(
+                    "get_data.sample is only supported for CSV-like tabular sources: "
+                    + ", ".join(sorted(_GET_DATA_SAMPLE_SOURCE_TYPES))
+                    + "."
+                ),
+            )
+        )
+    if not isinstance(sample_cfg, dict):
+        issues.append(
+            ValidationIssue(
+                code="CFG_GET_DATA_SAMPLE_INVALID",
+                path="get_data.sample",
+                message="get_data.sample must be a mapping with fraction, seed, and strategy fields.",
+            )
+        )
+        return
+
+    unknown_keys = sorted(set(sample_cfg) - _GET_DATA_SAMPLE_KEYS)
+    if unknown_keys:
+        issues.append(
+            ValidationIssue(
+                code="CFG_GET_DATA_SAMPLE_UNKNOWN_KEY",
+                path="get_data.sample",
+                message=(
+                    "get_data.sample contains unknown key(s): "
+                    + ", ".join(unknown_keys)
+                    + ". Allowed keys: "
+                    + ", ".join(sorted(_GET_DATA_SAMPLE_KEYS))
+                    + "."
+                ),
+            )
+        )
+
+    fraction = sample_cfg.get("fraction")
+    if isinstance(fraction, bool):
+        fraction_value = None
+    else:
+        try:
+            fraction_value = float(fraction)
+        except (TypeError, ValueError):
+            fraction_value = None
+    if fraction_value is None or not 0 < fraction_value <= 1:
+        issues.append(
+            ValidationIssue(
+                code="CFG_GET_DATA_SAMPLE_INVALID",
+                path="get_data.sample.fraction",
+                message="get_data.sample.fraction must be a number in the interval (0, 1].",
+            )
+        )
+
+    if "seed" in sample_cfg:
+        seed = sample_cfg.get("seed")
+        if isinstance(seed, bool):
+            seed_valid = False
+        elif isinstance(seed, int):
+            seed_valid = True
+        elif isinstance(seed, float):
+            seed_valid = seed.is_integer()
+        elif isinstance(seed, str):
+            text = seed.strip()
+            seed_valid = bool(text) and text.lstrip("+-").isdigit()
+        else:
+            seed_valid = False
+        if not seed_valid:
+            issues.append(
+                ValidationIssue(
+                    code="CFG_GET_DATA_SAMPLE_INVALID",
+                    path="get_data.sample.seed",
+                    message="get_data.sample.seed must be an integer.",
+                )
+            )
+
+    strategy = str(sample_cfg.get("strategy", "random") or "random").strip().lower()
+    if strategy not in _GET_DATA_SAMPLE_STRATEGIES:
+        issues.append(
+            ValidationIssue(
+                code="CFG_GET_DATA_SAMPLE_INVALID",
+                path="get_data.sample.strategy",
+                message=(
+                    "get_data.sample.strategy must be one of: "
+                    + ", ".join(sorted(_GET_DATA_SAMPLE_STRATEGIES))
+                    + "."
+                ),
+            )
+        )
 
 
 def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[ValidationIssue]:
@@ -658,6 +769,7 @@ def collect_config_issues(config: dict[str, Any], nodes: list[str]) -> list[Vali
 
     if "get_data" in nodes:
         source_cfg = _as_dict(get_data_cfg.get("source"))
+        _append_get_data_sample_issues(issues, get_data_cfg, source_type)
         if source_type == "local_csv" and not str(source_cfg.get("path", "")).strip():
             issues.append(
                 ValidationIssue(
