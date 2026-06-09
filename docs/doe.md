@@ -123,6 +123,10 @@ dataset:
   source:
     type: local_csv
     path: local_data/my_data.csv
+  sample:
+    fraction: 0.10
+    seed: 42
+    strategy: random
 
 defaults:
   global.base_dir: data/my_doe
@@ -144,6 +148,13 @@ constraints:
 output:
   dir: config/generated/my_doe
 ```
+
+Set `dataset.sample` when a DOE should run on a seeded fraction of the raw
+dataset before curation, featurization, split fanout, and model search.
+`strategy: random` takes a seeded row sample. `strategy: stratified` preserves
+classification class proportions; for regression it logs a warning and falls
+back to random sampling. Classification stratification happens before curation,
+so label-normalized datasets stratify on the raw `label.source_column`.
 
 `search_space` and `defaults` use dotted paths. Scalar values are treated as
 single-value axes; lists expand into a grid.

@@ -1,0 +1,59 @@
+version: 1
+
+dataset:
+  profile: reg_local_csv
+  name: qm9_chemeleon_randomcv_optuna_frac010_20260603
+  task_type: regression
+  target_column: gap
+  source:
+    type: local_csv
+    path: local_data/qm9.csv
+  smiles_column: smiles
+  sample:
+    fraction: 0.10
+    seed: 42
+    strategy: random
+
+defaults:
+  global.base_dir: tmp/qm9_chemeleon_randomcv_optuna_frac010_20260603/data
+  global.random_state: 42
+  global.runs.enabled: true
+  global.artifact_retention: audit_light
+  split.mode: cv
+  split.strategy: random
+  split.cv.n_splits: 5
+  split.cv.repeats: 1
+  split.val_from_train.val_size: 0.1
+  split.require_disjoint: true
+  split.require_full_test_coverage: true
+  pipeline.preprocess: true
+  pipeline.explain: false
+  pipeline.feature_input: smiles_native
+  preprocess.scaler: none
+  preprocess.variance_threshold: 0.0
+  preprocess.corr_threshold: 1.0
+  train.model.foundation: chemeleon
+  train.model.foundation_checkpoint: models/chemeleon_mp.pt
+  train.model.freeze_encoder: false
+  train.tuning.method: fixed
+  train.reporting.plot_split_performance: true
+
+search_space:
+  train.model.type: [chemeleon]
+
+model_search:
+  chemeleon:
+    method: optuna
+    n_trials: 8
+    seed: 42
+    params:
+      max_epochs: {type: categorical, choices: [20, 30, 40]}
+      batch_size: {type: categorical, choices: [32, 64, 128]}
+      max_lr: {type: float, low: 0.0001, high: 0.003, log: true}
+      ffn_hidden_dim: {type: categorical, choices: [128, 300, 600]}
+
+output:
+  dir: tmp/qm9_chemeleon_randomcv_optuna_frac010_20260603/generated
+
+constraints:
+  isolate_case_artifacts: true

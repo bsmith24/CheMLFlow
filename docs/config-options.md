@@ -154,7 +154,11 @@ get_data:
 | `source.url` | For http_csv | URL to fetch CSV from. |
 | `source.group` | For tdc | TDC dataset group (default: `ADME`). |
 | `source.name` | For tdc | TDC dataset name within the group. |
-| `max_rows` | No | Row limit for sampling raw CSV rows. Set under `get_data`, applied during `curate` when `pipeline_type: qm9`. |
+| `sample.fraction` | No | Seeded fraction of a CSV-like tabular source to use, in `(0, 1]`. In DOE specs, set this as `dataset.sample.fraction`; generated runtime configs carry it as `get_data.sample.fraction`. |
+| `sample.seed` | No | Integer seed for reproducible dataset sampling. Defaults to `global.random_state`. |
+| `sample.strategy` | No | `random` or `stratified`. Stratified preserves classification class proportions; regression logs a warning and falls back to random. |
+| `sample.stratify_column` | No | Optional raw CSV column to stratify on. If omitted, classification sampling uses `label.source_column`, then `curate.label_column`, then `global.target_column`. |
+| `max_rows` | No | Legacy/debug row limit that takes the first N raw CSV rows for QM9-style runs. Do not combine with `sample`. |
 
 `*` For `chembl`, provide at least one of `source.target_name` or `source.target_chembl_id`. If both are set, `source.target_chembl_id` pins the fetch to that exact target.
 

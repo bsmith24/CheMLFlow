@@ -257,7 +257,8 @@ Notes:
 - Explainability PNGs (permutation importance + SHAP): `results/`
 
 Notes:
-- Control dataset size via `get_data.max_rows` in your selected runtime config.
+- For DOE/Optuna screening on a reduced dataset, prefer `dataset.sample` in the DOE spec.
+  Legacy `get_data.max_rows` remains a QM9-style debug limiter that takes the first N raw rows.
 - Model choice is controlled by `train.model.type` (e.g., `random_forest`, `svm`, `decision_tree`, `xgboost`, `ensemble`).
 
 ### YSI (Sooting Index, local CSV → RDKit → Train → Explain)
