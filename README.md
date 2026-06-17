@@ -24,7 +24,8 @@
 
 ## Conferences, workshops, and hackathons
 
-- Conference presentations: "CheMLFlow: An Open Source Platform for Cheminformatics and Materials Informatics Applications" received the Best Oral Presentation Award (Silver) at the 1st Humanoid Olfactory Display International Research Conference.
+- Conference presentations:
+  1. "CheMLFlow: An Open Source Platform for Cheminformatics and Materials Informatics Applications" received the Best Oral Presentation Award (Silver) at the 1st Humanoid Olfactory Display International Research Conference. Presented by Susana López.
 - Workshops and hackathons: coming soon.
 
 ## Pipeline vision 
