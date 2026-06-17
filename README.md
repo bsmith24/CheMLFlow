@@ -2,8 +2,6 @@
   <img src="docs/assets/chemlflow-logo.jpg" alt="CheMLFlow logo" width="260">
 </p>
 
-<h1 align="center">CheMLFlow</h1>
-
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-blue">
   <img alt="Package" src="https://img.shields.io/badge/package-CheMLFlow%200.1.0-0B6FA4">
