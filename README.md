@@ -1,12 +1,20 @@
-# CheMLFlow
+<p align="center">
+  <img src="docs/assets/chemlflow-logo.jpg" alt="CheMLFlow logo" width="260">
+</p>
 
-![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![Package](https://img.shields.io/badge/package-CheMLFlow%200.1.0-0B6FA4)
-![License](https://img.shields.io/badge/license-MIT-yellow)
-![Docs](https://img.shields.io/badge/docs-available-brightgreen)
-![Agent skills](https://img.shields.io/badge/agent%20skills-available-0F766E)
+<h1 align="center">CheMLFlow</h1>
 
-CheMLFlow is an open-source platform for developing, benchmarking, and applying modern cheminformatics and materials-informatics machine-learning workflows.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-blue">
+  <img alt="Package" src="https://img.shields.io/badge/package-CheMLFlow%200.1.0-0B6FA4">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-yellow">
+  <img alt="Docs" src="https://img.shields.io/badge/docs-available-brightgreen">
+  <img alt="Agent skills" src="https://img.shields.io/badge/agent%20skills-available-0F766E">
+</p>
+
+<p align="center">
+  CheMLFlow is an open-source platform for developing, benchmarking, and applying modern cheminformatics and materials-informatics machine-learning workflows.
+</p>
 
 ## Quick links
 
