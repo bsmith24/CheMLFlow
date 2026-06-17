@@ -1,6 +1,25 @@
 # CheMLFlow
 
-CheMLFlow is an open source software to develop, benchmark, and apply modern cheminformatics and materials informatics workflows.
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![Package](https://img.shields.io/badge/package-CheMLFlow%200.1.0-0B6FA4)
+![License](https://img.shields.io/badge/license-MIT-yellow)
+![Docs](https://img.shields.io/badge/docs-available-brightgreen)
+![Agent skills](https://img.shields.io/badge/agent%20skills-available-0F766E)
+
+CheMLFlow is an open-source platform for developing, benchmarking, and applying modern cheminformatics and materials-informatics machine-learning workflows.
+
+## Quick links
+
+- [Installation](docs/installation.md)
+- [Quickstart](docs/quickstart.md)
+- [Configuration options](docs/config-options.md)
+- [Design-of-experiments workflows](docs/doe.md)
+- [Agent skills quickstart](docs/agent-skills-quickstart.md)
+
+## Conferences, workshops, and hackathons
+
+- Conference presentations: "CheMLFlow: An Open Source Platform for Cheminformatics and Materials Informatics Applications" received the Best Oral Presentation Award (Silver) at the 1st Humanoid Olfactory Display International Research Conference.
+- Workshops and hackathons: coming soon.
 
 ## Pipeline vision 
 
@@ -12,7 +31,7 @@ The required inputs are:
 - a `target_column` defined in config (for supervised tasks).
 - splitting strategy (e.g., random, scaffold)
 - an optional featurizer (e.g., Morgan fingerprints, RDKit descriptors, PaDel descriptors).
-- optioanl ML and AI models to be trained on or using pre-trained or foundational models. 
+- optional ML and AI models to be trained on or using pre-trained or foundational models. 
 
 Downstream steps enforce only the minimum required columns for their node (e.g., `canonical_smiles` for RDKit, `target_column` for model training), and extra columns are allowed.
 
