@@ -1,3 +1,5 @@
+<h1 align="center">Welcome to CheMLFlow!</h1>
+
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-blue">
   <img alt="Package" src="https://img.shields.io/badge/package-CheMLFlow%200.1.0-0B6FA4">
